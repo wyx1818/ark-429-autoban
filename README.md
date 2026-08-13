@@ -1,20 +1,20 @@
 # ark-429-autoban
 
-`ark-429-autoban` 是一个用于 [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) 的 CPA 插件，用来自动隔离返回 HTTP 429 的火山方舟（ARK）API Key。
+A [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) plugin that auto-isolates Volcano Engine ARK API keys on HTTP 429.
 
-当某个 ARK Key 因额度耗尽或服务繁忙返回 429 时，插件会暂时将它从调度候选中移除，避免后续请求继续命中同一个不可用 Key。达到恢复时间后，该 Key 会自动重新参与调度。
+When an ARK key returns 429 due to quota exhaustion or server overload, the plugin temporarily removes it from the scheduler candidate pool. The key is automatically re-enabled once its reset time passes.
 
-![ARK 429 Autoban 状态页面](docs/status-dark.png)
+![ARK 429 Autoban status page](docs/status-dark.png)
 
-## 功能
+## Features
 
-- 只处理 `openai-compatibility` 中 Base URL 使用官方域名 `https://ark.cn-beijing.volces.com` 的凭证，允许 `/api/plan/v3`、`/api/coding/v3` 等路径，不影响其他兼容服务。
-- 从 ARK 的 429 响应中解析额度重置时间，并封禁到对应时间。
-- 无法解析重置时间时按错误类型临时封禁：`ServerOverloaded` 为 5 分钟，限流类错误为 10 分钟，其他错误使用 `fallback_ban_minutes`（默认 30 分钟）。
-- 调度请求时自动过滤仍在封禁期内的 Key。
-- 封禁到期后自动恢复，无需手动操作。
-- 提供状态页面，可查看封禁列表、剩余时间、账号标签，hover Key 列可查看打码密钥，并手动解封或重新加载配置。
-- 没有 Key 被封禁时不接管选择结果，保留 CPA 原有的 Session Affinity 等调度行为。
+- **Precise ban duration**: Parses the exact reset time from ARK's 429 response body (`It will reset at ...`). Falls back to per-error-code durations when no reset time is available.
+- **Per-error-code fallback**: `ServerOverloaded` → 5 min, `RateLimitExceeded`/`Throttled`/`RequestLimitExceeded` → 10 min, unknown errors → configurable `fallback_ban_minutes` (default 30 min).
+- **Ban only extends, never shortens**: A new 429 with a later reset time extends the ban; an earlier one is ignored. Original `BannedAt` is preserved.
+- **Key label auto-compute**: Reads `config.yaml` comments (e.g. `# iaas-app-center-test`) as human-readable labels for the status page—no need to identify keys by hash.
+- **Lazy unban**: No timers. Ban expiry is checked on each scheduler pick—past expiry means the key goes back to the pool automatically.
+- **Non-intrusive**: Only processes `openai-compatibility` credentials whose Base URL uses `https://ark.cn-beijing.volces.com`. Non-ARK credentials are never touched.
+- **Management UI**: Embedded status page at `/v0/resource/plugins/ark-429-autoban/status` with ban list, countdown, key labels, manual unban, and config reload. Dark mode follows the CPA management panel.
 
 > 封禁状态保存在内存中，重启 CLIProxyAPI 后会清空。
 
@@ -122,3 +122,26 @@ graph TD
 5. 出现 ARK 429 后，确认对应 Key 出现在状态页并被后续调度过滤。
 
 仅看到插件加载成功并不能证明完整链路正常，最好使用真实请求验证 usage hook 和 scheduler。
+
+## Plugin Store 安装
+
+如果 CPA 版本支持插件商店，可以直接在 CPA 管理面板的 Plugin Store 中搜索 `ark-429-autoban` 安装。
+
+也可以手动添加自定义商店源：
+
+```yaml
+plugins:
+  enabled: true
+  store-sources:
+    - https://raw.githubusercontent.com/wyx1818/ark-429-autoban/main/registry.json
+```
+
+## 已知限制
+
+- **封禁状态保存在内存中**，CPA 重启后清空（与 CPA 自身冷却行为一致）。
+- **不支持跨 priority fallback**：如果多个 ARK provider 配置了不同 `priority`，高优先级组全部被 ban 时，CPA 的 `availableAuthsForRouteModel` 不会将低优先级组传递给插件。这是 CPA scheduler 架构的限制（[issue #4196](https://github.com/router-for-me/CLIProxyAPI/issues/4196)），非插件 bug。建议相同模型的 ARK provider 使用相同 priority。
+- **Usage hook 是异步的**：CPA 通过 usage queue 异步投递 usage record，插件 ban 操作可能滞后于下一次 scheduler pick。在快速 retry 时，同一 key 可能被重复选中触发 429。
+
+## License
+
+MIT
