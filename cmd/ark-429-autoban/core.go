@@ -10,7 +10,7 @@ import (
 
 const (
 	pluginName            = "ark-429-autoban"
-	pluginVersion         = "0.1.0"
+	pluginVersion         = "0.1.1"
 	openaiCompatPrefix    = "openai-compatibility:"
 	arkHost               = "ark.cn-beijing.volces.com"
 	statusTooManyRequests = 429
@@ -21,17 +21,19 @@ const (
 var resetTimeRe = regexp.MustCompile(`It will reset at (\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [+-]\d{4} \w+)`)
 
 type plugin struct {
-	bans        banState
-	mu          sync.RWMutex
-	keyHints    map[string]string
-	keyLabels   map[string]string
-	apiKeys     map[string]string
-	maskedKeys  map[string]string
-	arkAuths    map[string]bool
-	configPath  string
-	fallbackBan time.Duration
-	now         func() time.Time
-	readFile    func(string) ([]byte, error)
+	bans         banState
+	mu           sync.RWMutex
+	keyHints     map[string]string
+	keyLabels    map[string]string
+	apiKeys      map[string]string
+	maskedKeys   map[string]string
+	arkAuths     map[string]bool
+	configPath   string
+	scannedKeys  int
+	fallbackBan  time.Duration
+	dirty        chan struct{}
+	now          func() time.Time
+	readFile     func(string) ([]byte, error)
 }
 
 func newPlugin() *plugin {
@@ -42,6 +44,7 @@ func newPlugin() *plugin {
 		maskedKeys:  map[string]string{},
 		arkAuths:    map[string]bool{},
 		fallbackBan: defaultFallbackBan,
+		dirty:       make(chan struct{}, 1),
 		now:         time.Now,
 		readFile:    os.ReadFile,
 	}

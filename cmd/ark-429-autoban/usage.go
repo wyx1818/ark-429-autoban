@@ -98,6 +98,7 @@ func (p *plugin) handleUsage(raw []byte) ([]byte, error) {
 	}
 
 	p.bans.set(authID, entry)
+	p.markDirty()
 	slog.Info("ark-429-autoban: banned credential after 429",
 		"auth_id", authID,
 		"key_hint", entry.KeyHint,

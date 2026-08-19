@@ -67,8 +67,16 @@ func (p *plugin) configure(raw []byte) {
 	count := 0
 	if cfg.ConfigPath != "" {
 		count = p.autoComputeKeyLabels(cfg.ConfigPath)
+		p.mu.Lock()
+		p.scannedKeys = count
+		p.mu.Unlock()
 	}
 	slog.Info("ark-429-autoban: loaded key labels", "count", count, "auto_computed", cfg.ConfigPath != "")
+
+	// Load persisted bans and start background saver.
+	persistDir := p.resolvePersistDir()
+	p.loadBans(persistDir)
+	p.startPersister(persistDir)
 }
 
 // parsePluginConfigYAML extracts config_path and fallback_ban_minutes from the plugin config YAML.
