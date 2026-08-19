@@ -3,7 +3,7 @@ package main
 import (
 	"encoding/json"
 	"net/http"
-	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -304,10 +304,11 @@ func TestIsARKBaseURL(t *testing.T) {
 func TestConfigAutoCompute(t *testing.T) {
 	p := newPlugin()
 	p.readFile = func(path string) ([]byte, error) {
-		if path != "/CLIProxyAPI/config.yaml" {
-			t.Fatalf("path=%q", path)
+		if path == "/CLIProxyAPI/config.yaml" {
+			return []byte("name: ark-code\nbase-url: https://ark.cn-beijing.volces.com/api/coding/v3\napi-key: arksk-...5678 # automatic\n"), nil
 		}
-		return []byte("name: ark-code\nbase-url: https://ark.cn-beijing.volces.com/api/coding/v3\napi-key: arksk-test12345678 # automatic\n"), nil
+		// bans file doesn't exist during tests.
+		return nil, os.ErrNotExist
 	}
 	configYAML := "config_path: /CLIProxyAPI/config.yaml\n"
 	req, _ := json.Marshal(map[string][]byte{"config_yaml": []byte(configYAML)})
@@ -333,7 +334,10 @@ func TestConfigAutoCompute(t *testing.T) {
 func TestConfigSkipsNonARKBaseURL(t *testing.T) {
 	p := newPlugin()
 	p.readFile = func(path string) ([]byte, error) {
-		return []byte("name: ark-code\nbase-url: https://example.com\napi-key: arksk-test12345678 # other\n"), nil
+		if path == "/CLIProxyAPI/config.yaml" {
+			return []byte("name: ark-code\nbase-url: https://example.com\napi-key: arksk-...5678 # other\n"), nil
+		}
+		return nil, os.ErrNotExist
 	}
 	configYAML := "config_path: /CLIProxyAPI/config.yaml\n"
 	req, _ := json.Marshal(map[string][]byte{"config_yaml": []byte(configYAML)})
@@ -378,12 +382,23 @@ func TestManagementAndEmbeddedWeb(t *testing.T) {
 	if bad.StatusCode != http.StatusBadRequest {
 		t.Fatalf("bad status=%d", bad.StatusCode)
 	}
-	unban := p.dispatchManagement(pluginapi.ManagementRequest{Method: http.MethodGet, Path: "/v0/resource/plugins/" + pluginName + "/unban", Query: url.Values{"auth_id": []string{authID}}})
+	// Unauthenticated resource-path mutations must no longer exist.
+	for _, legacy := range []string{"/unban", "/unban-all", "/reload-config", "/bans.json"} {
+		resp := p.dispatchManagement(pluginapi.ManagementRequest{Method: http.MethodGet, Path: "/v0/resource/plugins/" + pluginName + legacy})
+		if resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("legacy resource route %s still served (status=%d)", legacy, resp.StatusCode)
+		}
+	}
+	unban := p.dispatchManagement(pluginapi.ManagementRequest{Method: http.MethodPost, Path: managementRoutePrefix + "/unban", Body: []byte(`{"auth_id":"` + authID + `"}`)})
 	if unban.StatusCode != 200 {
 		t.Fatalf("unban status=%d", unban.StatusCode)
 	}
 	if _, ok := p.bans.lookup(authID); ok {
 		t.Fatal("ban still present")
+	}
+	reload := p.dispatchManagement(pluginapi.ManagementRequest{Method: http.MethodPost, Path: managementRoutePrefix + "/reload-config"})
+	if reload.StatusCode != 200 {
+		t.Fatalf("reload status=%d", reload.StatusCode)
 	}
 }
 
@@ -398,6 +413,23 @@ func TestManagementRegistrationIncludesAssets(t *testing.T) {
 	for path, found := range want {
 		if !found {
 			t.Errorf("missing resource route %s", path)
+		}
+	}
+	// Dynamic routes must be registered as authenticated management routes.
+	mgmtWant := map[string]bool{
+		managementRoutePrefix + "/bans":           false,
+		managementRoutePrefix + "/unban":          false,
+		managementRoutePrefix + "/unban-all":      false,
+		managementRoutePrefix + "/reload-config":  false,
+	}
+	for _, route := range registration.Routes {
+		if _, ok := mgmtWant[route.Path]; ok {
+			mgmtWant[route.Path] = true
+		}
+	}
+	for path, found := range mgmtWant {
+		if !found {
+			t.Errorf("missing management route %s", path)
 		}
 	}
 }

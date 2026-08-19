@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"github.com/wyx1818/ark-429-autoban/internal/cpasdk/pluginapi"
 	"log/slog"
 	"net/http"
@@ -31,18 +30,20 @@ func managementRegistration() pluginapi.ManagementRegistrationResponse {
 				Path:        managementRoutePrefix + "/unban-all",
 				Description: "Remove every auth from the in-memory ban list.",
 			},
+			{
+				Method:      http.MethodPost,
+				Path:        managementRoutePrefix + "/reload-config",
+				Description: "Reload key labels from the CPA config file.",
+			},
 		},
-		// Resource routes (no auth required) - all operations via GET.
+		// Resource routes: passive static assets only (no auth, GET-only).
+		// Dynamic state and mutations live under the authenticated
+		// management routes above.
 		Resources: []pluginapi.ResourceRoute{
 			{
 				Path:        "/status",
 				Menu:        "ARK 429 Autoban",
 				Description: "View and manually unban ARK credentials after a quota reset.",
-			},
-			{
-				Path:        "/bans.json",
-				Menu:        "",
-				Description: "Ban status as JSON for local refresh.",
 			},
 			{
 				Path:        "/status.css",
@@ -53,21 +54,6 @@ func managementRegistration() pluginapi.ManagementRegistrationResponse {
 				Path:        "/status.js",
 				Menu:        "",
 				Description: "Embedded script for the status page.",
-			},
-			{
-				Path:        "/unban",
-				Menu:        "",
-				Description: "Remove one auth from the ban list. Query: ?auth_id=...",
-			},
-			{
-				Path:        "/unban-all",
-				Menu:        "",
-				Description: "Remove all auths from the ban list.",
-			},
-			{
-				Path:        "/reload-config",
-				Menu:        "",
-				Description: "Reload key labels from CPA config.",
 			},
 		},
 	}
@@ -87,7 +73,11 @@ func (p *plugin) reloadKeyLabels() int {
 	p.maskedKeys = make(map[string]string)
 	p.arkAuths = make(map[string]bool)
 	p.mu.Unlock()
-	return p.autoComputeKeyLabels(cfgPath)
+	count := p.autoComputeKeyLabels(cfgPath)
+	p.mu.Lock()
+	p.scannedKeys = count
+	p.mu.Unlock()
+	return count
 }
 
 func (p *plugin) handleManagement(raw []byte) ([]byte, error) {
@@ -111,25 +101,19 @@ func (p *plugin) dispatchManagement(req pluginapi.ManagementRequest) pluginapi.M
 		return p.handleManagementUnban(req)
 	case method == http.MethodPost && matchesManagementPath(req.Path, "/unban-all"):
 		return p.handleManagementUnbanAll()
-	case method == http.MethodGet && matchesResourcePath(req.Path, "/reload-config"):
+	case method == http.MethodPost && matchesManagementPath(req.Path, "/reload-config"):
 		count := p.reloadKeyLabels()
-		return htmlManagementResponse(http.StatusOK, fmt.Sprintf(`<!doctype html><html><head><meta http-equiv="refresh" content="0; url=/v0/resource/plugins/%s/status"></head><body>Reloaded %d labels</body></html>`, pluginName, count))
+		return jsonManagementResponse(http.StatusOK, map[string]any{
+			"ok":           true,
+			"reloaded":     count,
+			"scanned_keys": count,
+		})
 	case method == http.MethodGet && matchesResourcePath(req.Path, "/status"):
 		return p.statusPageResponse()
 	case method == http.MethodGet && matchesResourcePath(req.Path, "/status.css"):
 		return embeddedAssetResponse("web/status.css", "text/css; charset=utf-8")
 	case method == http.MethodGet && matchesResourcePath(req.Path, "/status.js"):
 		return embeddedAssetResponse("web/status.js", "text/javascript; charset=utf-8")
-	case method == http.MethodGet && matchesResourcePath(req.Path, "/bans.json"):
-		return jsonManagementResponse(http.StatusOK, p.currentBanStatus())
-	// Resource-path unban (GET, no management key required).
-	// Returns a minimal HTML page that redirects back to /status.
-	case method == http.MethodGet && matchesResourcePath(req.Path, "/unban"):
-		p.handleManagementUnban(req)
-		return redirectResponse(pluginName)
-	case method == http.MethodGet && matchesResourcePath(req.Path, "/unban-all"):
-		p.handleManagementUnbanAll()
-		return redirectResponse(pluginName)
 	default:
 		return jsonManagementResponse(http.StatusNotFound, map[string]any{
 			"error":  "not_found",
@@ -140,10 +124,11 @@ func (p *plugin) dispatchManagement(req pluginapi.ManagementRequest) pluginapi.M
 }
 
 type managementBanStatus struct {
-	Plugin  string              `json:"plugin"`
-	Version string              `json:"version"`
-	Count   int                 `json:"count"`
-	Bans    []managementBanInfo `json:"bans"`
+	Plugin       string              `json:"plugin"`
+	Version      string              `json:"version"`
+	Count        int                 `json:"count"`
+	ScannedKeys  int                 `json:"scanned_keys"`
+	Bans         []managementBanInfo `json:"bans"`
 }
 
 type managementBanInfo struct {
@@ -162,7 +147,9 @@ type managementBanInfo struct {
 
 func (p *plugin) currentBanStatus() managementBanStatus {
 	now := p.now()
-	p.bans.clearExpired(now)
+	if removed := p.bans.clearExpired(now); removed > 0 {
+		p.markDirty()
+	}
 	snapshot := p.bans.snapshot()
 	bans := make([]managementBanInfo, 0, len(snapshot))
 	for authID, entry := range snapshot {
@@ -205,11 +192,15 @@ func (p *plugin) currentBanStatus() managementBanStatus {
 		}
 		return bans[i].ResetAtUnix < bans[j].ResetAtUnix
 	})
+	p.mu.RLock()
+	scanned := p.scannedKeys
+	p.mu.RUnlock()
 	return managementBanStatus{
-		Plugin:  pluginName,
-		Version: pluginVersion,
-		Count:   len(bans),
-		Bans:    bans,
+		Plugin:      pluginName,
+		Version:     pluginVersion,
+		Count:       len(bans),
+		ScannedKeys: scanned,
+		Bans:        bans,
 	}
 }
 
@@ -245,6 +236,7 @@ func (p *plugin) handleManagementUnban(req pluginapi.ManagementRequest) pluginap
 
 	entry, removed := p.bans.clear(authID)
 	if removed {
+		p.markDirty()
 		slog.Info("ark-429-autoban: manually re-enabled credential",
 			"auth_id", authID, "window", entry.Window, "reset_at", entry.ResetAt.Format(time.RFC3339))
 	}
@@ -259,6 +251,7 @@ func (p *plugin) handleManagementUnban(req pluginapi.ManagementRequest) pluginap
 func (p *plugin) handleManagementUnbanAll() pluginapi.ManagementResponse {
 	removed := p.bans.clearAll()
 	if removed > 0 {
+		p.markDirty()
 		slog.Info("ark-429-autoban: manually re-enabled all credentials", "removed", removed)
 	}
 	return jsonManagementResponse(http.StatusOK, map[string]any{
@@ -281,6 +274,10 @@ func matchesManagementPath(path, suffix string) bool {
 
 func matchesResourcePath(path, suffix string) bool {
 	path = strings.TrimRight(strings.TrimSpace(path), "/")
+	// Strip query string (e.g. ?v=2 for cache busting).
+	if idx := strings.Index(path, "?"); idx >= 0 {
+		path = path[:idx]
+	}
 	if path == "" {
 		return false
 	}
@@ -306,26 +303,5 @@ func jsonManagementResponse(status int, v any) pluginapi.ManagementResponse {
 			"Content-Type": []string{"application/json; charset=utf-8"},
 		},
 		Body: raw,
-	}
-}
-
-func htmlManagementResponse(status int, body string) pluginapi.ManagementResponse {
-	return pluginapi.ManagementResponse{
-		StatusCode: status,
-		Headers: http.Header{
-			"Content-Type": []string{"text/html; charset=utf-8"},
-		},
-		Body: []byte(body),
-	}
-}
-
-func redirectResponse(plugin string) pluginapi.ManagementResponse {
-	body := `<!doctype html><html><head><meta http-equiv="refresh" content="0; url=/v0/resource/plugins/` + plugin + `/status"></head><body>Redirecting...</body></html>`
-	return pluginapi.ManagementResponse{
-		StatusCode: http.StatusOK,
-		Headers: http.Header{
-			"Content-Type": []string{"text/html; charset=utf-8"},
-		},
-		Body: []byte(body),
 	}
 }

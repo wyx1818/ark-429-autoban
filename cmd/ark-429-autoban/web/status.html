@@ -9,7 +9,12 @@
 </head>
 <body>
   <h1>ARK 429 Autoban <span class="version">v{{.Version}}</span></h1>
-  <div class="summary" id="summary">Active bans: {{.Status.Count}}</div>
+  <div class="summary" id="summary">Active bans: {{.Status.Count}} · Scanned keys: {{.Status.ScannedKeys}}</div>
+  <div id="auth-notice" class="notice" hidden></div>
+  <div class="key-row">
+    <input id="mgmt-key" type="password" autocomplete="current-password" placeholder="Management key" aria-label="Management key">
+    <button id="save-key-btn" type="button">Save Key</button>
+  </div>
   <div class="actions">
     <button id="refresh-btn" type="button">Refresh</button>
     <button id="unban-all-btn" class="danger" type="button">Unban All</button>
@@ -22,8 +27,8 @@
         {{if .Status.Bans}}
           {{range .Status.Bans}}
           <tr>
-            <td class="auth-id">{{.APIKey}}</td><td class="auth-id{{if .MaskedKey}} has-tooltip{{end}}"><span{{if not .KeyHint}} class="muted"{{end}}>{{if .KeyHint}}{{.KeyHint}}{{else}}unknown{{end}}{{if .MaskedKey}}<span class="tooltip">{{.MaskedKey}}</span>{{end}}</span></td>
-            <td class="window-cell{{if .ErrorCode}} has-tooltip{{end}}"><span>{{.Window}}{{if .ErrorCode}}<span class="tooltip">{{.ErrorCode}}</span>{{end}}</span></td><td>{{.ResetAt}}</td><td class="countdown" data-seconds="{{.RemainingSeconds}}"></td>
+            <td class="auth-id">{{.APIKey}}</td><td class="auth-id{{if and .MaskedKey (ne .MaskedKey .KeyHint)}} has-tooltip{{end}}"><span{{if not .KeyHint}} class="muted"{{end}}>{{if .KeyHint}}{{.KeyHint}}{{else}}unknown{{end}}{{if and .MaskedKey (ne .MaskedKey .KeyHint)}}<span class="tooltip">{{.MaskedKey}}</span>{{end}}</span></td>
+            <td class="window-cell{{if .ErrorCode}} has-tooltip{{end}}"><span>{{.Window}}{{if .ErrorCode}}<span class="tooltip">{{.ErrorCode}}</span>{{end}}</span></td><td class="has-tooltip"><span>{{.ResetAt}}<span class="tooltip" data-unix="{{.ResetAtUnix}}"></span></span></td><td class="countdown" data-seconds="{{.RemainingSeconds}}"></td>
             <td><button class="unban-btn" type="button" data-auth-id="{{.AuthID}}">Unban</button></td>
           </tr>
           {{end}}
