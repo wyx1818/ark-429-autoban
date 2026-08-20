@@ -91,9 +91,11 @@
     try { localStorage.setItem(KEY_STORAGE, mgmtKey); } catch (_) {}
     if (mgmtKey) {
       setNotice("Key saved.", false);
+      startPolling();
       refreshData();
     } else {
       try { localStorage.removeItem(KEY_STORAGE); } catch (_) {}
+      stopPolling();
       setNotice("Key cleared.", false);
     }
   }
@@ -174,9 +176,12 @@
     return td;
   }
 
+  var refreshTimer = null;
+  var refreshRemaining = 0;
+
   function render(data) {
     var tbody = document.getElementById("ban-tbody");
-    document.getElementById("summary").textContent = "Active bans: " + data.count + " · Scanned keys: " + (data.scanned_keys || 0);
+    document.getElementById("summary").textContent = "Active bans: " + data.count + " · Scanned keys: " + (data.scanned_keys || 0) + (refreshTimer ? " · Refresh in " + Math.ceil(refreshRemaining) + "s" : "");
     tbody.replaceChildren();
     if (!data.bans.length) {
       var emptyRow = document.createElement("tr");
@@ -187,7 +192,15 @@
     }
     data.bans.forEach(function (ban) {
       var row = document.createElement("tr");
-      cell(row, ban.api_key || ban.auth_id.replace(/^openai-compatibility:/, ""), "auth-id");
+      // API Key column ("ark-plan #4"): hover shows the full CPA auth ID.
+      var apiCell = cell(row, "", "auth-id has-tooltip");
+      var apiSpan = document.createElement("span");
+      apiSpan.textContent = ban.api_key || ban.auth_id.replace(/^openai-compatibility:/, "");
+      var apiTip = document.createElement("span");
+      apiTip.className = "tooltip tooltip-left";
+      apiTip.textContent = ban.auth_id;
+      apiSpan.appendChild(apiTip);
+      apiCell.appendChild(apiSpan);
       var keyCell = cell(row, "", "auth-id");
       if (ban.masked_key && ban.masked_key !== ban.key_hint) keyCell.className += " has-tooltip";
       var keySpan = document.createElement("span");
@@ -235,13 +248,49 @@
     });
   }
 
+  var REFRESH_INTERVAL = 30000;
+
+  // Start the auto-refresh polling loop only when a key is available.
+  function startPolling() {
+    if (refreshTimer) return;
+    refreshRemaining = REFRESH_INTERVAL / 1000;
+    refreshTimer = setInterval(function () {
+      refreshRemaining -= 1;
+      if (refreshRemaining <= 0) {
+        refreshRemaining = REFRESH_INTERVAL / 1000;
+        refreshData();
+      }
+      updateSummaryCountdown();
+    }, 1000);
+  }
+
+  function stopPolling() {
+    if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
+    updateSummaryCountdown();
+  }
+
+  function updateSummaryCountdown() {
+    var el = document.getElementById("summary");
+    var text = el.textContent.replace(/ · Refresh in \d+s$/, "");
+    if (refreshTimer) text += " · Refresh in " + Math.ceil(refreshRemaining) + "s";
+    el.textContent = text;
+  }
+
+  var refreshInFlight = false;
+
   function refreshData() {
+    if (refreshInFlight) return Promise.resolve();
+    refreshInFlight = true;
     var button = document.getElementById("refresh-btn");
     button.disabled = true;
     button.textContent = "Loading...";
+    refreshRemaining = REFRESH_INTERVAL / 1000;
     return apiFetch("/bans")
       .then(function (response) {
         if (!response.ok) {
+          // Stop polling on auth failures so a bad key does not hammer the
+          // API (and trip the 5-failure IP ban).
+          if (response.status === 401 || response.status === 403) stopPolling();
           return serverError(response).then(function (msg) {
             setNotice(msg, true);
             return null;
@@ -253,6 +302,7 @@
       .then(function (data) { if (data) render(data); })
       .catch(function () { setNotice("Request failed. Check network/panel connection.", true); })
       .finally(function () {
+        refreshInFlight = false;
         button.disabled = false;
         button.textContent = "Refresh";
       });
@@ -303,6 +353,10 @@
   initKey();
   syncTheme();
   setInterval(syncTheme, 2000);
-  setInterval(refreshData, 30000);
-  if (mgmtKey) refreshData();
+  if (mgmtKey) {
+    startPolling();
+    refreshData();
+  } else {
+    setNotice("No management key. Enter a key to enable live refresh.", false);
+  }
 })();

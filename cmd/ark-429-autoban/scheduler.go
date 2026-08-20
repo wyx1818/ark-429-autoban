@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/wyx1818/ark-429-autoban/internal/cpasdk/pluginapi"
 	"log/slog"
+	"strings"
 )
 
 // handleSchedulerPick filters out credentials that are still banned, then
@@ -65,12 +66,85 @@ func (p *plugin) handleSchedulerPick(raw []byte) ([]byte, error) {
 		return okEnvelope(pluginapi.SchedulerPickResponse{Handled: false})
 	}
 
-	// Pick the available candidate with the highest numeric priority value.
-	chosen := available[0]
+	// CPA groups candidates by priority before calling plugins, but stay
+	// defensive: restrict to the highest priority group, then run smooth
+	// weighted round-robin inside it (same algorithm as CPA's
+	// WeightedRoundRobinSelector; the plugin ABI cannot delegate to it).
+	// Always filter to the top tier; 0 is not a sentinel (priorities may be
+	// negative or all zero).
+	top := available[:0]
+	maxPriority := available[0].Priority
 	for _, c := range available[1:] {
-		if c.Priority > chosen.Priority {
-			chosen = c
+		if c.Priority > maxPriority {
+			maxPriority = c.Priority
 		}
+	}
+	for _, c := range available {
+		if c.Priority == maxPriority {
+			top = append(top, c)
+		}
+	}
+	stateKey := strings.ToLower(strings.TrimSpace(req.Provider)) + ":" + strings.TrimSpace(req.Model)
+	p.mu.RLock()
+	strategy := p.strategy
+	affinity, affinityTTL := p.affinity, p.affinityTTL
+	p.mu.RUnlock()
+
+	// Session affinity: when CPA's affinity is enabled, honor an existing
+	// binding if the bound auth survived the ban filter; otherwise fall
+	// through to the strategy pick and rebind. This mirrors the host's
+	// SessionAffinitySelector, which the plugin pick path bypasses.
+	sessionKey := ""
+	if affinity {
+		if sessionID := extractSessionID(req.Options); sessionID != "" {
+			sessionKey = strings.ToLower(strings.TrimSpace(req.Provider)) + "::" + sessionID + "::" + strings.TrimSpace(req.Model)
+			if boundAuthID, ok := p.affinityStore.get(sessionKey, now); ok {
+				for _, c := range top {
+					if c.ID == boundAuthID {
+						p.affinityStore.touch(sessionKey, affinityTTL, now)
+						slog.Info("ark-429-autoban: scheduler pick (session affinity hit)",
+							"auth_id", c.ID, "available", len(available), "banned", bannedCount)
+						return okEnvelope(pluginapi.SchedulerPickResponse{AuthID: c.ID, Handled: true})
+					}
+				}
+				slog.Info("ark-429-autoban: session binding no longer available, reselecting",
+					"bound_auth_id", boundAuthID, "available", len(available), "banned", bannedCount)
+			}
+		}
+	}
+
+	var chosen pluginapi.SchedulerAuthCandidate
+	switch strategy {
+	case strategyFillFirst:
+		// Mirror FillFirstSelector: always the first available candidate.
+		chosen = top[0]
+	case strategyWeightedRoundRobin:
+		picked, ok := p.wrr.pick(stateKey, top)
+		if !ok {
+			// Every remaining candidate has a non-positive explicit weight,
+			// mirroring CPA's "no auth available with positive weight".
+			slog.Warn("ark-429-autoban: no candidate with positive weight, refusing to schedule",
+				"total_candidates", len(req.Candidates), "available", len(available))
+			return nil, fmt.Errorf("no credential available with positive weight")
+		}
+		chosen = picked
+	default: // strategyRoundRobin
+		// Mirror RoundRobinSelector: a per-(provider, model) cursor advanced
+		// on every pick, modulo the current candidate count.
+		p.mu.Lock()
+		index := p.rrCursors[stateKey]
+		if index >= 2_147_483_640 {
+			index = 0
+		}
+		p.rrCursors[stateKey] = index + 1
+		p.mu.Unlock()
+		chosen = top[index%len(top)]
+	}
+	slog.Info("ark-429-autoban: scheduler pick",
+		"strategy", strategy, "auth_id", chosen.ID, "weight", candidateWeight(chosen),
+		"group_size", len(top), "available", len(available), "banned", bannedCount)
+	if sessionKey != "" {
+		p.affinityStore.set(sessionKey, chosen.ID, affinityTTL, now)
 	}
 	return okEnvelope(pluginapi.SchedulerPickResponse{
 		AuthID:  chosen.ID,

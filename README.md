@@ -13,10 +13,11 @@ When an ARK key returns 429 due to quota exhaustion or server overload, the plug
 - **Ban only extends, never shortens**: A new 429 with a later reset time extends the ban; an earlier one is ignored. Original `BannedAt` is preserved.
 - **Key label auto-compute**: Reads `config.yaml` comments (e.g. `# iaas-app-center-test`) as human-readable labels for the status page—no need to identify keys by hash.
 - **Lazy unban**: No timers. Ban expiry is checked on each scheduler pick—past expiry means the key goes back to the pool automatically.
-- **Non-intrusive**: Only processes `openai-compatibility` credentials whose Base URL uses `https://ark.cn-beijing.volces.com`. Non-ARK credentials are never touched.
+- **Follows CPA routing strategy**: When bans force the plugin to take over scheduling, it runs the same algorithm configured in CPA's `routing.strategy`—`round-robin`, `weighted-round-robin` (smooth WRR with per-key `weight`), or `fill-first`—over the ban-filtered candidate set.
+- **Session affinity preserved**: When CPA's `routing.session-affinity` is enabled, the plugin keeps session-to-key bindings (including CPA's derived session IDs, so header-less clients still stick) with the configured `session-affinity-ttl`. A binding whose key gets banned is reselected via the configured strategy.
+- **Ban persistence**: Bans are written to `ark-429-autoban-bans.json` (next to the plugin dir) and restored on restart—CPA restarts no longer wipe ban state.
+- **Non-intrusive**: Only processes `openai-compatibility` credentials whose Base URL uses `https://ark.cn-beijing.volces.com`. Recognition is purely by Base URL—any provider name works (`ark-code`, `ark-plan`, …), and non-ARK credentials (e.g. OpenRouter) are never touched.
 - **Management UI**: Embedded status page at `/v0/resource/plugins/ark-429-autoban/status` with ban list, countdown, key labels, manual unban, and config reload. Dark mode follows the CPA management panel.
-
-> 封禁状态保存在内存中，重启 CLIProxyAPI 后会清空。
 
 ## 配置项
 
@@ -70,9 +71,18 @@ plugins:
       fallback_ban_minutes: 30  # 可选，默认 30
 ```
 
-`config_path` 必须是 CLIProxyAPI 进程能够读取的配置文件路径。插件会读取该文件中的 ARK provider、Base URL、API Key 及行尾注释，用于识别 ARK 凭证并在状态页显示易读标签。
+`config_path` 必须是 CLIProxyAPI 进程能够读取的配置文件路径。插件会扫描该文件 `openai-compatibility:` 块中的所有 provider，凡 Base URL 属于 `https://ark.cn-beijing.volces.com` 的都识别为 ARK 凭证（不看 provider 名字，`ark-code`、`ark-plan` 等任意命名均可），并读取 API Key 的行尾注释在状态页显示易读标签。
 
-例如：
+同时，插件会从该文件的 `routing:` 块读取调度配置，使封禁期间的插件接管调度与 CPA 行为保持一致：
+
+```yaml
+routing:
+  strategy: weighted-round-robin  # round-robin（默认）/ weighted-round-robin / fill-first
+  session-affinity: true          # 有 key 被 ban 时插件侧保持会话粘性
+  session-affinity-ttl: "1h"      # 粘性绑定 TTL，缺省 1 小时
+```
+
+配合 `weighted-round-robin` 时，可在 `api-key-entries` 中为每个 key 配置 `weight`（缺省 1，上限 100 万，与 CPA 一致）：
 
 ```yaml
 openai-compatibility:
@@ -80,7 +90,10 @@ openai-compatibility:
     base-url: https://ark.cn-beijing.volces.com/api/coding/v3
     api-key-entries:
       - api-key: *** # account-name
+        weight: 2
 ```
+
+修改 routing 配置后调用状态页的"重新加载配置"（或重启 CPA）即可生效，无需重新编译插件。
 
 配置完成后重启 CLIProxyAPI，使插件被加载。
 
@@ -138,9 +151,9 @@ plugins:
 
 ## 已知限制
 
-- **封禁状态保存在内存中**，CPA 重启后清空（与 CPA 自身冷却行为一致）。
 - **不支持跨 priority fallback**：如果多个 ARK provider 配置了不同 `priority`，高优先级组全部被 ban 时，CPA 的 `availableAuthsForRouteModel` 不会将低优先级组传递给插件。这是 CPA scheduler 架构的限制（[issue #4196](https://github.com/router-for-me/CLIProxyAPI/issues/4196)），非插件 bug。建议相同模型的 ARK provider 使用相同 priority。
 - **Usage hook 是异步的**：CPA 通过 usage queue 异步投递 usage record，插件 ban 操作可能滞后于下一次 scheduler pick。在快速 retry 时，同一 key 可能被重复选中触发 429。
+- **插件接管调度期间绕过 CPA 的 SessionAffinitySelector**：排除被 ban key 必须让插件返回 `Handled`，因此插件在内部复刻了 routing strategy 和 session affinity 逻辑。与 CPA 原生实现仍有细微差异：粘性 TTL 在 pick 时续期（CPA 在请求成功后 Touch），且请求体中的 `prompt_cache_key`/`session_id` 等显式 session 字段插件不可见（由 CPA 的 derived session ID 兜底）。
 
 ## License
 

@@ -85,3 +85,8 @@ th:nth-child(6), td:nth-child(6) { min-width: 90px; position: sticky; right: 0; 
 .has-tooltip .tooltip { display: none; position: absolute; bottom: calc(100% + 4px); left: 50%; transform: translateX(-50%); white-space: nowrap; padding: 3px 8px; border-radius: 4px; font-size: 12px; font-family: monospace; background: var(--tooltip-bg) !important; color: var(--tooltip-fg) !important; border: 1px solid var(--tooltip-border); z-index: 10; pointer-events: none; }
 .has-tooltip .tooltip::after { content: ""; position: absolute; top: 100%; left: 50%; transform: translateX(-50%); border: 4px solid transparent; border-top-color: var(--tooltip-border); }
 .has-tooltip > span:hover .tooltip { display: block; }
+
+/* Left-aligned variant for the first column: a centered long tooltip would
+   overflow the table's left edge and get clipped. */
+.has-tooltip .tooltip.tooltip-left { left: 0; transform: none; }
+.has-tooltip .tooltip.tooltip-left::after { left: 16px; }

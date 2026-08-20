@@ -118,22 +118,57 @@ func (p *plugin) autoComputeKeyLabels(configPath string) int {
 
 	content := string(data)
 	lines := strings.Split(content, "\n")
+
+	// Pick up the host's routing config so the plugin's ban-filtered
+	// scheduling follows the same strategy and affinity the user configured.
+	routing := parseRoutingConfig(lines)
+	p.mu.Lock()
+	// Reset to CPA defaults first so removed keys fall back instead of
+	// keeping stale values from the previous load.
+	p.strategy = strategyRoundRobin
+	p.affinityTTL = time.Hour
+	if routing.strategy != "" {
+		p.strategy = normalizeStrategy(routing.strategy)
+	}
+	p.affinity = routing.affinity
+	if routing.ttl > 0 {
+		p.affinityTTL = routing.ttl
+	}
+	strategy, affinity, affinityTTL := p.strategy, p.affinity, p.affinityTTL
+	p.mu.Unlock()
+	slog.Info("ark-429-autoban: following CPA routing config",
+		"strategy", strategy, "session_affinity", affinity, "affinity_ttl", affinityTTL)
+
 	currentProvider := ""
 	currentBase := ""
 	keyIndex := 0 // 1-based per provider, reset on provider change
 	count := 0
+	inOpenAICompat := false
 
 	for _, line := range lines {
-		// Detect provider name
-		if strings.Contains(line, "name:") && strings.Contains(line, "ark") {
-			// Extract name value
-			idx := strings.Index(line, "name:")
-			rest := strings.TrimSpace(line[idx+5:])
+		// Track the top-level openai-compatibility block: provider names are
+		// only meaningful inside it (model entries also use "- name:").
+		if len(line) > 0 && line[0] != ' ' && line[0] != '\t' && line[0] != '#' {
+			trimmed := strings.TrimSpace(line)
+			inOpenAICompat = trimmed == "openai-compatibility:" || strings.HasPrefix(trimmed, "openai-compatibility: ")
+			currentProvider = ""
+			currentBase = ""
+			continue
+		}
+		if !inOpenAICompat {
+			continue
+		}
+		// Detect provider name: entries are exactly one level deep
+		// ("  - name:"), model list entries are deeper and ignored here.
+		if strings.HasPrefix(line, "  - name:") {
+			rest := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "- name:"))
 			rest = strings.Trim(rest, "\"' ")
-			if rest != "" && (strings.Contains(rest, "ark-agent") || strings.Contains(rest, "ark-code")) {
+			if rest != "" {
 				currentProvider = strings.ToLower(rest)
+				currentBase = ""
 				keyIndex = 0 // reset for new provider
 			}
+			continue
 		}
 		// Detect base-url
 		if strings.Contains(line, "base-url:") && currentProvider != "" {
@@ -196,4 +231,53 @@ func (p *plugin) autoComputeKeyLabels(configPath string) int {
 	slog.Info("ark-429-autoban: auto-computed key labels from CPA config",
 		"path", configPath, "count", count)
 	return count
+}
+
+// routingConfig mirrors the CPA routing: block fields this plugin follows.
+type routingConfig struct {
+	strategy string
+	affinity bool
+	ttl      time.Duration
+}
+
+// parseRoutingConfig extracts strategy / session-affinity / session-affinity-ttl
+// from the top-level `routing:` block of the CPA config. Lightweight line-based
+// parse (consistent with the rest of this file; avoids a yaml dependency clash
+// with the host). Zero values mean "not configured".
+func parseRoutingConfig(lines []string) routingConfig {
+	var cfg routingConfig
+	inRouting := false
+	for _, line := range lines {
+		// Top-level keys have no leading whitespace; entering `routing:` opens
+		// the block, any other top-level key closes it.
+		if len(line) > 0 && line[0] != ' ' && line[0] != '\t' && line[0] != '#' {
+			trimmed := strings.TrimSpace(line)
+			inRouting = trimmed == "routing:" || strings.HasPrefix(trimmed, "routing: ")
+			continue
+		}
+		if !inRouting {
+			continue
+		}
+		trimmed := strings.TrimSpace(line)
+		key, val, found := strings.Cut(trimmed, ":")
+		if !found {
+			continue
+		}
+		val = strings.TrimSpace(val)
+		if commentIdx := strings.Index(val, " #"); commentIdx >= 0 {
+			val = strings.TrimSpace(val[:commentIdx])
+		}
+		val = strings.Trim(val, "\"'")
+		switch strings.TrimSpace(key) {
+		case "strategy":
+			cfg.strategy = val
+		case "session-affinity":
+			cfg.affinity = val == "true"
+		case "session-affinity-ttl":
+			if parsed, err := time.ParseDuration(val); err == nil && parsed > 0 {
+				cfg.ttl = parsed
+			}
+		}
+	}
+	return cfg
 }

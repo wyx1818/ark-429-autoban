@@ -4,13 +4,14 @@ import (
 	"log/slog"
 	"os"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 )
 
 const (
 	pluginName            = "ark-429-autoban"
-	pluginVersion         = "0.1.1"
+	pluginVersion         = "0.2.0"
 	openaiCompatPrefix    = "openai-compatibility:"
 	arkHost               = "ark.cn-beijing.volces.com"
 	statusTooManyRequests = 429
@@ -18,35 +19,69 @@ const (
 	managementRoutePrefix = "/plugins/" + pluginName
 )
 
+// Scheduling strategies mirrored from CPA's routing.strategy
+// (internal/config RoutingConfig). The plugin replicates them because the
+// scheduler plugin ABI cannot delegate filtered candidate sets to the host.
+const (
+	strategyRoundRobin         = "round-robin"
+	strategyWeightedRoundRobin = "weighted-round-robin"
+	strategyFillFirst          = "fill-first"
+)
+
+// normalizeStrategy maps CPA's accepted aliases to canonical strategy names,
+// mirroring sdk/cliproxy/service_config.go. Unknown/empty values fall back to
+// round-robin, same as the host default.
+func normalizeStrategy(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "weighted-round-robin", "weightedroundrobin", "wrr":
+		return strategyWeightedRoundRobin
+	case "fill-first", "fillfirst", "ff":
+		return strategyFillFirst
+	default:
+		return strategyRoundRobin
+	}
+}
+
 var resetTimeRe = regexp.MustCompile(`It will reset at (\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [+-]\d{4} \w+)`)
 
 type plugin struct {
-	bans         banState
-	mu           sync.RWMutex
-	keyHints     map[string]string
-	keyLabels    map[string]string
-	apiKeys      map[string]string
-	maskedKeys   map[string]string
-	arkAuths     map[string]bool
-	configPath   string
-	scannedKeys  int
-	fallbackBan  time.Duration
-	dirty        chan struct{}
-	now          func() time.Time
-	readFile     func(string) ([]byte, error)
+	bans          banState
+	mu            sync.RWMutex
+	keyHints      map[string]string
+	keyLabels     map[string]string
+	apiKeys       map[string]string
+	maskedKeys    map[string]string
+	arkAuths      map[string]bool
+	wrr           *wrrScheduler
+	rrCursors     map[string]int
+	strategy      string
+	affinity      bool
+	affinityTTL   time.Duration
+	affinityStore *affinityStore
+	configPath    string
+	scannedKeys   int
+	fallbackBan   time.Duration
+	dirty         chan struct{}
+	now           func() time.Time
+	readFile      func(string) ([]byte, error)
 }
 
 func newPlugin() *plugin {
 	return &plugin{
-		keyHints:    map[string]string{},
-		keyLabels:   map[string]string{},
-		apiKeys:     map[string]string{},
-		maskedKeys:  map[string]string{},
-		arkAuths:    map[string]bool{},
-		fallbackBan: defaultFallbackBan,
-		dirty:       make(chan struct{}, 1),
-		now:         time.Now,
-		readFile:    os.ReadFile,
+		keyHints:      map[string]string{},
+		keyLabels:     map[string]string{},
+		apiKeys:       map[string]string{},
+		maskedKeys:    map[string]string{},
+		arkAuths:      map[string]bool{},
+		wrr:           newWRRScheduler(),
+		rrCursors:     map[string]int{},
+		strategy:      strategyRoundRobin,
+		affinityTTL:   time.Hour, // CPA's default when session-affinity-ttl is unset
+		affinityStore: newAffinityStore(),
+		fallbackBan:   defaultFallbackBan,
+		dirty:         make(chan struct{}, 1),
+		now:           time.Now,
+		readFile:      os.ReadFile,
 	}
 }
 

@@ -305,7 +305,7 @@ func TestConfigAutoCompute(t *testing.T) {
 	p := newPlugin()
 	p.readFile = func(path string) ([]byte, error) {
 		if path == "/CLIProxyAPI/config.yaml" {
-			return []byte("name: ark-code\nbase-url: https://ark.cn-beijing.volces.com/api/coding/v3\napi-key: arksk-...5678 # automatic\n"), nil
+			return []byte("openai-compatibility:\n  - name: \"ark-code\"\n    base-url: https://ark.cn-beijing.volces.com/api/coding/v3\n    api-key-entries:\n      - api-key: arksk-...5678 # automatic\n"), nil
 		}
 		// bans file doesn't exist during tests.
 		return nil, os.ErrNotExist
@@ -335,7 +335,7 @@ func TestConfigSkipsNonARKBaseURL(t *testing.T) {
 	p := newPlugin()
 	p.readFile = func(path string) ([]byte, error) {
 		if path == "/CLIProxyAPI/config.yaml" {
-			return []byte("name: ark-code\nbase-url: https://example.com\napi-key: arksk-...5678 # other\n"), nil
+			return []byte("openai-compatibility:\n  - name: \"ark-code\"\n    base-url: https://example.com\n    api-key-entries:\n      - api-key: arksk-...5678 # other\n"), nil
 		}
 		return nil, os.ErrNotExist
 	}
@@ -431,5 +431,444 @@ func TestManagementRegistrationIncludesAssets(t *testing.T) {
 		if !found {
 			t.Errorf("missing management route %s", path)
 		}
+	}
+}
+
+func weighted(id string, weight string) pluginapi.SchedulerAuthCandidate {
+	attrs := map[string]string{}
+	if weight != "" {
+		attrs["weight"] = weight
+	}
+	return pluginapi.SchedulerAuthCandidate{ID: id, Provider: "ark-code", Attributes: attrs}
+}
+
+func TestWRRSmoothDistribution(t *testing.T) {
+	s := newWRRScheduler()
+	candidates := []pluginapi.SchedulerAuthCandidate{
+		weighted("a", "2"), weighted("b", "1"), weighted("c", ""), // c defaults to 1
+	}
+	counts := map[string]int{}
+	for i := 0; i < 8; i++ {
+		picked, ok := s.pick("ark-code:glm-5.2", candidates)
+		if !ok {
+			t.Fatal("no pick")
+		}
+		counts[picked.ID]++
+	}
+	// Smooth WRR over 8 picks with weights 2:1:1 must be exactly 4:2:2.
+	if counts["a"] != 4 || counts["b"] != 2 || counts["c"] != 2 {
+		t.Fatalf("counts=%v, want a=4 b=2 c=2", counts)
+	}
+}
+
+func TestWRRZeroAndInvalidWeightExcluded(t *testing.T) {
+	s := newWRRScheduler()
+	candidates := []pluginapi.SchedulerAuthCandidate{
+		weighted("zero", "0"), weighted("neg", "-3"), weighted("bad", "abc"),
+		weighted("over", "1000001"), weighted("ok", "1"),
+	}
+	for i := 0; i < 5; i++ {
+		picked, ok := s.pick("k", candidates)
+		if !ok || picked.ID != "ok" {
+			t.Fatalf("pick=%q ok=%v, want ok only", picked.ID, ok)
+		}
+	}
+	// All non-positive weights: no pick, mirroring CPA's behavior.
+	if _, ok := s.pick("k", candidates[:4]); ok {
+		t.Fatal("expected no pick when all weights are non-positive")
+	}
+}
+
+func TestWRRWeightVectorChangeResets(t *testing.T) {
+	s := newWRRScheduler()
+	two := []pluginapi.SchedulerAuthCandidate{weighted("a", "1"), weighted("b", "1")}
+	for i := 0; i < 4; i++ {
+		if _, ok := s.pick("k", two); !ok {
+			t.Fatal("no pick")
+		}
+	}
+	// b gets banned: only a remains, currents reset, a picked every time.
+	one := two[:1]
+	for i := 0; i < 3; i++ {
+		picked, ok := s.pick("k", one)
+		if !ok || picked.ID != "a" {
+			t.Fatalf("pick=%q ok=%v", picked.ID, ok)
+		}
+	}
+}
+
+func TestWRRPerModelStateIsolation(t *testing.T) {
+	s := newWRRScheduler()
+	candidates := []pluginapi.SchedulerAuthCandidate{weighted("a", "1"), weighted("b", "1")}
+	first, _ := s.pick("p:model-1", candidates)
+	// A different model has its own cursor and must start from a again.
+	other, _ := s.pick("p:model-2", candidates)
+	if first.ID != other.ID {
+		t.Fatalf("model-2 first pick=%q, want same as model-1 first pick %q", other.ID, first.ID)
+	}
+}
+
+func TestSchedulerWRRSkipsBanned(t *testing.T) {
+	now := time.Now()
+	p := fixedPlugin(now)
+	arkA := pluginapi.SchedulerAuthCandidate{ID: "openai-compatibility:ark-code:a", Attributes: map[string]string{"weight": "3"}}
+	arkB := pluginapi.SchedulerAuthCandidate{ID: "openai-compatibility:ark-code:b", Attributes: map[string]string{"weight": "1"}}
+	p.mu.Lock()
+	p.arkAuths[arkA.ID] = true
+	p.arkAuths[arkB.ID] = true
+	p.mu.Unlock()
+	p.bans.set(arkA.ID, banEntry{ResetAt: now.Add(time.Hour)})
+
+	raw, _ := json.Marshal(pluginapi.SchedulerPickRequest{
+		Provider:   "ark-code",
+		Model:      "glm-5.2",
+		Candidates: []pluginapi.SchedulerAuthCandidate{arkA, arkB},
+	})
+	for i := 0; i < 3; i++ {
+		out, err := p.handleSchedulerPick(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := envelopeResult[pluginapi.SchedulerPickResponse](t, out)
+		if !got.Handled || got.AuthID != arkB.ID {
+			t.Fatalf("got=%+v, want handled pick of banned-filtered arkB", got)
+		}
+	}
+}
+
+func TestParseRoutingStrategy(t *testing.T) {
+	tests := []struct {
+		name, yaml, want string
+	}{
+		{"wrr", "routing:\n  strategy: weighted-round-robin\n", "weighted-round-robin"},
+		{"fill-first quoted", "routing:\n  strategy: \"fill-first\"\n", "fill-first"},
+		{"with comment", "routing: # routing config\n  strategy: wrr\n", "wrr"},
+		{"absent", "port: 8317\n", ""},
+		{"closed by next top key", "routing:\n  strategy: fill-first\ndebug: true\n  strategy: wrr\n", "fill-first"},
+		{"comment line not treated as key", "# routing:\nport: 1\n", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := parseRoutingConfig(strings.Split(tt.yaml, "\n")).strategy; got != tt.want {
+				t.Fatalf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+	// session-affinity fields
+	rc := parseRoutingConfig(strings.Split("routing:\n  strategy: wrr\n  session-affinity: true\n  session-affinity-ttl: 2h\n", "\n"))
+	if !rc.affinity || rc.ttl != 2*time.Hour || rc.strategy != "wrr" {
+		t.Fatalf("routing config=%+v", rc)
+	}
+	if rc := parseRoutingConfig(strings.Split("port: 1\n", "\n")); rc.affinity || rc.ttl != 0 {
+		t.Fatalf("unexpected affinity defaults=%+v", rc)
+	}
+	if normalizeStrategy("wrr") != strategyWeightedRoundRobin ||
+		normalizeStrategy("FF") != strategyFillFirst ||
+		normalizeStrategy("bogus") != strategyRoundRobin ||
+		normalizeStrategy("") != strategyRoundRobin {
+		t.Fatal("normalizeStrategy alias mapping wrong")
+	}
+}
+
+// schedulerPickN runs n picks through handleSchedulerPick with the given
+// strategy and returns the picked auth IDs in order.
+func schedulerPickN(t *testing.T, p *plugin, strategy string, req pluginapi.SchedulerPickRequest, n int) []string {
+	t.Helper()
+	p.mu.Lock()
+	p.strategy = strategy
+	p.mu.Unlock()
+	raw, _ := json.Marshal(req)
+	ids := make([]string, 0, n)
+	for i := 0; i < n; i++ {
+		out, err := p.handleSchedulerPick(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := envelopeResult[pluginapi.SchedulerPickResponse](t, out)
+		if !got.Handled {
+			t.Fatal("expected handled pick")
+		}
+		ids = append(ids, got.AuthID)
+	}
+	return ids
+}
+
+func TestSchedulerStrategies(t *testing.T) {
+	now := time.Now()
+	mk := func(id string) pluginapi.SchedulerAuthCandidate {
+		return pluginapi.SchedulerAuthCandidate{ID: id, Attributes: map[string]string{"weight": "1"}}
+	}
+	a, b, c := mk("openai-compatibility:ark-code:a"), mk("openai-compatibility:ark-code:b"), mk("openai-compatibility:ark-code:c")
+	req := pluginapi.SchedulerPickRequest{Provider: "ark-code", Model: "glm-5.2", Candidates: []pluginapi.SchedulerAuthCandidate{a, b, c}}
+
+	newP := func() *plugin {
+		p := fixedPlugin(now)
+		p.mu.Lock()
+		p.arkAuths[a.ID], p.arkAuths[b.ID], p.arkAuths[c.ID] = true, true, true
+		p.mu.Unlock()
+		// Ban one key so the plugin takes over scheduling for every case.
+		p.bans.set(c.ID, banEntry{ResetAt: now.Add(time.Hour)})
+		return p
+	}
+
+	// round-robin rotates over the filtered set (c banned).
+	if ids := schedulerPickN(t, newP(), strategyRoundRobin, req, 4); strings.Join(ids, ",") != a.ID+","+b.ID+","+a.ID+","+b.ID {
+		t.Fatalf("round-robin ids=%v", ids)
+	}
+	// fill-first always picks the first available.
+	if ids := schedulerPickN(t, newP(), strategyFillFirst, req, 3); strings.Join(ids, ",") != a.ID+","+a.ID+","+a.ID {
+		t.Fatalf("fill-first ids=%v", ids)
+	}
+	// weighted round-robin with equal weights alternates too, over filtered set.
+	if ids := schedulerPickN(t, newP(), strategyWeightedRoundRobin, req, 4); strings.Join(ids, ",") != a.ID+","+b.ID+","+a.ID+","+b.ID {
+		t.Fatalf("wrr ids=%v", ids)
+	}
+}
+
+func TestExtractSessionID(t *testing.T) {
+	// Header priority and case-insensitivity.
+	opts := pluginapi.SchedulerOptions{Headers: map[string][]string{"x-session-id": {"  abc  "}}}
+	if got := extractSessionID(opts); got != "hdr:x-session-id:abc" {
+		t.Fatalf("header got %q", got)
+	}
+	// Metadata fallback: execution id wins over derived id.
+	opts = pluginapi.SchedulerOptions{Metadata: map[string]any{
+		"execution_session_id": "exec-1", "derived_session_id": "der-1"}}
+	if got := extractSessionID(opts); got != "execution:exec-1" {
+		t.Fatalf("execution got %q", got)
+	}
+	opts = pluginapi.SchedulerOptions{Metadata: map[string]any{"derived_session_id": "der-1"}}
+	if got := extractSessionID(opts); got != "derived:der-1" {
+		t.Fatalf("derived got %q", got)
+	}
+	if got := extractSessionID(pluginapi.SchedulerOptions{}); got != "" {
+		t.Fatalf("empty got %q", got)
+	}
+}
+
+func TestSchedulerSessionAffinity(t *testing.T) {
+	now := time.Now()
+	mk := func(id string) pluginapi.SchedulerAuthCandidate {
+		return pluginapi.SchedulerAuthCandidate{ID: id, Attributes: map[string]string{"weight": "1"}}
+	}
+	a, b, banned := mk("openai-compatibility:ark-code:a"), mk("openai-compatibility:ark-code:b"), mk("openai-compatibility:ark-code:c")
+	newP := func() *plugin {
+		p := fixedPlugin(now)
+		p.mu.Lock()
+		p.arkAuths[a.ID], p.arkAuths[b.ID], p.arkAuths[banned.ID] = true, true, true
+		p.strategy = strategyRoundRobin
+		p.affinity = true
+		p.affinityTTL = time.Hour
+		p.mu.Unlock()
+		p.bans.set(banned.ID, banEntry{ResetAt: now.Add(time.Hour)})
+		return p
+	}
+	req := pluginapi.SchedulerPickRequest{
+		Provider:   "ark-code",
+		Model:      "glm-5.2",
+		Candidates: []pluginapi.SchedulerAuthCandidate{a, b, banned},
+		Options:    pluginapi.SchedulerOptions{Metadata: map[string]any{"derived_session_id": "sess-1"}},
+	}
+
+	// Same session sticks to the first picked key even though round-robin
+	// would alternate.
+	p := newP()
+	ids := schedulerPickN(t, p, strategyRoundRobin, req, 4)
+	for _, id := range ids {
+		if id != ids[0] {
+			t.Fatalf("session not sticky: %v", ids)
+		}
+	}
+
+	// A different session gets its own binding (round-robin cursor advanced
+	// by the first session, so it lands on the other key).
+	req2 := req
+	req2.Options = pluginapi.SchedulerOptions{Metadata: map[string]any{"derived_session_id": "sess-2"}}
+	ids2 := schedulerPickN(t, p, strategyRoundRobin, req2, 2)
+	if ids2[0] == ids[0] {
+		t.Fatalf("different session should rebind via strategy: %v vs %v", ids, ids2)
+	}
+
+	// Bound key gets banned -> affinity reselects from the remaining set.
+	p2 := newP()
+	first := schedulerPickN(t, p2, strategyRoundRobin, req, 1)[0]
+	p2.bans.set(first, banEntry{ResetAt: now.Add(time.Hour)})
+	next := schedulerPickN(t, p2, strategyRoundRobin, req, 1)[0]
+	if next == first {
+		t.Fatalf("bound key banned but still picked: %q", next)
+	}
+
+	// Expired binding is dropped and reselected.
+	p3 := newP()
+	past := now.Add(-2 * time.Hour)
+	p3.now = func() time.Time { return past }
+	schedulerPickN(t, p3, strategyRoundRobin, req, 1)
+	p3.now = func() time.Time { return now } // TTL (1h) expired
+	p3.affinityStore.set("ark-code::derived:sess-1::glm-5.2", banned.ID, time.Hour, past)
+	got := schedulerPickN(t, p3, strategyRoundRobin, req, 1)[0]
+	if got == banned.ID {
+		t.Fatal("expired binding to banned key should not be honored")
+	}
+}
+
+func TestAffinityTouchExtendsBinding(t *testing.T) {
+	now := time.Now()
+	mk := func(id string) pluginapi.SchedulerAuthCandidate {
+		return pluginapi.SchedulerAuthCandidate{ID: id, Attributes: map[string]string{"weight": "1"}}
+	}
+	a, b, banned := mk("openai-compatibility:ark-code:a"), mk("openai-compatibility:ark-code:b"), mk("openai-compatibility:ark-code:c")
+	p := fixedPlugin(now)
+	p.mu.Lock()
+	p.arkAuths[a.ID], p.arkAuths[b.ID], p.arkAuths[banned.ID] = true, true, true
+	p.strategy = strategyRoundRobin
+	p.affinity = true
+	p.affinityTTL = time.Hour
+	p.mu.Unlock()
+	p.bans.set(banned.ID, banEntry{ResetAt: now.Add(24 * time.Hour)})
+	req := pluginapi.SchedulerPickRequest{
+		Provider:   "ark-code",
+		Model:      "glm-5.2",
+		Candidates: []pluginapi.SchedulerAuthCandidate{a, b, banned},
+		Options:    pluginapi.SchedulerOptions{Metadata: map[string]any{"derived_session_id": "sess-1"}},
+	}
+
+	// Bind at t0, then keep hitting the binding every 30 minutes for 5 hours.
+	// Without touch the binding would expire after the 1h TTL; with touch it
+	// must stay alive and keep sticking to the same key.
+	current := now
+	p.now = func() time.Time { return current }
+	first := schedulerPickN(t, p, strategyRoundRobin, req, 1)[0]
+	for i := 0; i < 10; i++ {
+		current = current.Add(30 * time.Minute)
+		got := schedulerPickN(t, p, strategyRoundRobin, req, 1)[0]
+		if got != first {
+			t.Fatalf("binding lost at step %d: picked %q, want %q", i, got, first)
+		}
+	}
+	// Idle past the TTL after the last touch: expires and reselects.
+	current = current.Add(2 * time.Hour)
+	p.bans.set(first, banEntry{ResetAt: current.Add(time.Hour)})
+	got := schedulerPickN(t, p, strategyRoundRobin, req, 1)[0]
+	if got == first {
+		t.Fatal("idle binding should have expired and rebound away from banned key")
+	}
+}
+
+func TestConfigArkPlanRecognized(t *testing.T) {
+	p := newPlugin()
+	p.readFile = func(path string) ([]byte, error) {
+		if path == "/CLIProxyAPI/config.yaml" {
+			return []byte(`openai-compatibility:
+  - name: "ark-code"
+    base-url: https://ark.cn-beijing.volces.com/api/coding/v3
+    api-key-entries:
+      - api-key: arksk-code-1 # code-one
+    models:
+      - name: "glm-5.3"
+  - name: "ark-plan"
+    base-url: https://ark.cn-beijing.volces.com/api/plan/v3
+    api-key-entries:
+      - api-key: arksk-plan-1 # plan-one
+      - api-key: arksk-plan-2 # plan-two
+    models:
+      - name: "kimi-k3"
+  - name: "openrouter"
+    base-url: https://openrouter.ai/api/v1
+    api-key-entries:
+      - api-key: sk-or-1 # not-ark
+routing:
+  strategy: wrr
+`), nil
+		}
+		return nil, os.ErrNotExist
+	}
+	configYAML := "config_path: /CLIProxyAPI/config.yaml\n"
+	req, _ := json.Marshal(map[string][]byte{"config_yaml": []byte(configYAML)})
+	p.configure(req)
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	// 1 ark-code key + 2 ark-plan keys; openrouter skipped by base-url gate;
+	// model "- name:" entries must not clobber provider tracking.
+	if len(p.arkAuths) != 3 {
+		t.Fatalf("arkAuths=%d, want 3 (%v)", len(p.arkAuths), p.arkAuths)
+	}
+	labels := map[string]bool{}
+	for authID := range p.arkAuths {
+		labels[p.keyLabels[authID]] = true
+		if !strings.HasPrefix(authID, "openai-compatibility:ark-code:") && !strings.HasPrefix(authID, "openai-compatibility:ark-plan:") {
+			t.Fatalf("unexpected authID %q", authID)
+		}
+	}
+	for _, want := range []string{"code-one", "plan-one", "plan-two"} {
+		if !labels[want] {
+			t.Fatalf("missing label %q in %v", want, labels)
+		}
+	}
+	if p.strategy != strategyWeightedRoundRobin {
+		t.Fatalf("strategy=%q", p.strategy)
+	}
+}
+
+func TestSchedulerNegativePriorityGrouping(t *testing.T) {
+	now := time.Now()
+	p := fixedPlugin(now)
+	top1 := pluginapi.SchedulerAuthCandidate{ID: "openai-compatibility:ark-code:top1", Priority: -1}
+	top2 := pluginapi.SchedulerAuthCandidate{ID: "openai-compatibility:ark-code:top2", Priority: -1}
+	low := pluginapi.SchedulerAuthCandidate{ID: "openai-compatibility:ark-code:low", Priority: -5}
+	p.mu.Lock()
+	p.arkAuths[top1.ID], p.arkAuths[top2.ID], p.arkAuths[low.ID] = true, true, true
+	p.mu.Unlock()
+	// Ban one top-tier key so the plugin handles scheduling.
+	p.bans.set(top2.ID, banEntry{ResetAt: now.Add(time.Hour)})
+	raw, _ := json.Marshal(pluginapi.SchedulerPickRequest{
+		Provider:   "ark-code",
+		Model:      "glm-5.2",
+		Candidates: []pluginapi.SchedulerAuthCandidate{low, top1, top2},
+	})
+	out, err := p.handleSchedulerPick(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := envelopeResult[pluginapi.SchedulerPickResponse](t, out)
+	// Only top1 survives: low must be excluded even though all priorities
+	// are negative (0 must not act as a sentinel).
+	if !got.Handled || got.AuthID != top1.ID {
+		t.Fatalf("got=%+v, want %q", got, top1.ID)
+	}
+}
+
+func TestRoutingConfigResetOnReload(t *testing.T) {
+	p := newPlugin()
+	p.readFile = func(path string) ([]byte, error) {
+		return nil, os.ErrNotExist
+	}
+	// First load: wrr + affinity with custom TTL.
+	p.readFile = func(path string) ([]byte, error) {
+		if path == "/CLIProxyAPI/config.yaml" {
+			return []byte("routing:\n  strategy: wrr\n  session-affinity: true\n  session-affinity-ttl: 2h\n"), nil
+		}
+		return nil, os.ErrNotExist
+	}
+	req, _ := json.Marshal(map[string][]byte{"config_yaml": []byte("config_path: /CLIProxyAPI/config.yaml\n")})
+	p.configure(req)
+	p.mu.RLock()
+	if p.strategy != strategyWeightedRoundRobin || !p.affinity || p.affinityTTL != 2*time.Hour {
+		t.Fatalf("after wrr load: strategy=%q affinity=%v ttl=%v", p.strategy, p.affinity, p.affinityTTL)
+	}
+	p.mu.RUnlock()
+
+	// Second load: routing keys removed -> must fall back to CPA defaults
+	// (round-robin, affinity off, 1h TTL) instead of keeping stale values.
+	p.readFile = func(path string) ([]byte, error) {
+		if path == "/CLIProxyAPI/config.yaml" {
+			return []byte("port: 8317\n"), nil
+		}
+		return nil, os.ErrNotExist
+	}
+	p.configure(req)
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if p.strategy != strategyRoundRobin || p.affinity || p.affinityTTL != time.Hour {
+		t.Fatalf("after reset: strategy=%q affinity=%v ttl=%v", p.strategy, p.affinity, p.affinityTTL)
 	}
 }
