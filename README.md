@@ -1,5 +1,7 @@
 # ark-429-autoban
 
+English | [中文](https://github.com/wyx1818/ark-429-autoban/blob/main/README_CN.md)
+
 A [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) plugin that auto-isolates Volcano Engine ARK API keys on HTTP 429.
 
 When an ARK key returns 429 due to quota exhaustion or server overload, the plugin temporarily removes it from the scheduler candidate pool. The key is automatically re-enabled once its reset time passes.
@@ -19,45 +21,43 @@ When an ARK key returns 429 due to quota exhaustion or server overload, the plug
 - **Non-intrusive**: Only processes `openai-compatibility` credentials whose Base URL uses `https://ark.cn-beijing.volces.com`. Recognition is purely by Base URL—any provider name works (`ark-code`, `ark-plan`, …), and non-ARK credentials (e.g. OpenRouter) are never touched.
 - **Management UI**: Embedded status page at `/v0/resource/plugins/ark-429-autoban/status` with ban list, countdown, key labels, manual unban, and config reload. Dark mode follows the CPA management panel.
 
-## 配置项
+## Configuration
 
-| 配置项 | 类型 | 默认值 | 说明 |
-|--------|------|--------|------|
-| `config_path` | string | — | CPA 的 config.yaml 路径，用于自动读取 ARK provider、Base URL、API Key 及行尾注释，识别 ARK 凭证并生成状态页标签。 |
-| `fallback_ban_minutes` | integer | 30 | 未知 429 错误且无法解析重置时间时的通用封禁时长（分钟）。已知错误使用内置策略：`ServerOverloaded` 5 分钟，`RateLimitExceeded`、`Throttled`、`RequestLimitExceeded` 10 分钟。 |
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `config_path` | string | — | Path to CPA's config.yaml. Used to scan ARK providers, Base URLs, API keys, and trailing comments for credential detection and status-page labels. |
+| `fallback_ban_minutes` | integer | 30 | Generic ban duration (minutes) for unknown 429 errors without a parseable reset time. Known errors use built-in durations: `ServerOverloaded` 5 min; `RateLimitExceeded`, `Throttled`, `RequestLimitExceeded` 10 min. |
 
-## 使用方法
+## Usage
 
-### 1. 获取插件
+### 1. Get the plugin
 
-可以直接使用已编译的 `ark-429-autoban.so`，也可以从源码构建。
-
-源码构建需要 Docker：
+Use a prebuilt `ark-429-autoban.so`, or build from source (Docker required):
 
 ```bash
 docker build -t 429builder:latest -f build/Dockerfile .
 ./build.sh
 ```
 
-编译结果位于：
+Build output:
 
 ```text
 dist/ark-429-autoban.so
 ```
 
-### 2. 安装插件
+### 2. Install the plugin
 
-将 `.so` 复制到 CLIProxyAPI 配置的插件目录。下面以容器内目录 `/CLIProxyAPI/data/plugins` 为例：
+Copy the `.so` into the plugin directory configured in CLIProxyAPI, e.g. `/CLIProxyAPI/data/plugins` inside a container:
 
 ```bash
 cp dist/ark-429-autoban.so /path/to/cpa/data/plugins/
 ```
 
-如果 CLIProxyAPI 运行在 Docker 中，请确保宿主机插件目录已挂载到容器内，并且与 `plugins.dir` 指向同一位置。
+If CLIProxyAPI runs in Docker, make sure the host plugin directory is mounted into the container and matches `plugins.dir`.
 
-### 3. 配置 CLIProxyAPI
+### 3. Configure CLIProxyAPI
 
-在 CLIProxyAPI 的 `config.yaml` 中启用插件：
+Enable the plugin in CLIProxyAPI's `config.yaml`:
 
 ```yaml
 plugins:
@@ -68,21 +68,21 @@ plugins:
       enabled: true
       priority: 100
       config_path: /CLIProxyAPI/config.yaml
-      fallback_ban_minutes: 30  # 可选，默认 30
+      fallback_ban_minutes: 30  # optional, default 30
 ```
 
-`config_path` 必须是 CLIProxyAPI 进程能够读取的配置文件路径。插件会扫描该文件 `openai-compatibility:` 块中的所有 provider，凡 Base URL 属于 `https://ark.cn-beijing.volces.com` 的都识别为 ARK 凭证（不看 provider 名字，`ark-code`、`ark-plan` 等任意命名均可），并读取 API Key 的行尾注释在状态页显示易读标签。
+`config_path` must be readable by the CLIProxyAPI process. The plugin scans every provider in the file's `openai-compatibility:` block; any provider whose Base URL belongs to `https://ark.cn-beijing.volces.com` is recognized as an ARK credential (provider names don't matter—`ark-code`, `ark-plan`, or anything else), and trailing comments on API key lines become human-readable labels on the status page.
 
-同时，插件会从该文件的 `routing:` 块读取调度配置，使封禁期间的插件接管调度与 CPA 行为保持一致：
+The plugin also reads the file's `routing:` block so its takeover scheduling stays consistent with CPA behavior:
 
 ```yaml
 routing:
-  strategy: weighted-round-robin  # round-robin（默认）/ weighted-round-robin / fill-first
-  session-affinity: true          # 有 key 被 ban 时插件侧保持会话粘性
-  session-affinity-ttl: "1h"      # 粘性绑定 TTL，缺省 1 小时
+  strategy: weighted-round-robin  # round-robin (default) / weighted-round-robin / fill-first
+  session-affinity: true          # keep session stickiness while the plugin handles scheduling
+  session-affinity-ttl: "1h"      # binding TTL, defaults to 1 hour
 ```
 
-配合 `weighted-round-robin` 时，可在 `api-key-entries` 中为每个 key 配置 `weight`（缺省 1，上限 100 万，与 CPA 一致）：
+With `weighted-round-robin`, each key can set a `weight` under `api-key-entries` (default 1, max 1,000,000—same as CPA):
 
 ```yaml
 openai-compatibility:
@@ -93,54 +93,54 @@ openai-compatibility:
         weight: 2
 ```
 
-修改 routing 配置后调用状态页的"重新加载配置"（或重启 CPA）即可生效，无需重新编译插件。
+After changing routing settings, use "Reload config" on the status page (or restart CPA)—no need to rebuild the plugin.
 
-配置完成后重启 CLIProxyAPI，使插件被加载。
+Restart CLIProxyAPI so the plugin is loaded.
 
-### 4. 查看状态
+### 4. View status
 
-插件加载后，可通过 CPA 管理界面中的 **ARK 429 Autoban** 菜单进入状态页，或者直接访问：
+Once loaded, open **ARK 429 Autoban** in the CPA management UI, or visit:
 
 ```text
 /v0/resource/plugins/ark-429-autoban/status
 ```
 
-状态页支持：
+The status page supports:
 
-- 查看当前被封禁的 Key（显示账号注释标签，hover 查看打码密钥）
-- 查看封禁原因、恢复时间和剩余时间
-- 手动解封单个或全部 Key
-- 重新读取 `config_path`，刷新账号标签
+- Viewing currently banned keys (account comment labels; hover the API Key column for the full auth ID, hover the Key column for the masked key)
+- Ban reason, reset time, and remaining countdown (auto-refreshes every 30s)
+- Manual unban for a single key or all keys
+- Reloading `config_path` to refresh labels and routing settings
 
-## 工作流程
+## How it works
 
 ```mermaid
 graph TD
-    A[ARK Key 返回 429] --> B{响应体中是否有<br/>可解析的重置时间？}
-    B -- 是 --> C[按实际重置时间封禁]
-    B -- 否 --> D["按错误类型选择临时封禁时长<br/>未知错误使用 fallback_ban_minutes"]
-    C --> E[Scheduler 过滤该 Key]
+    A[ARK key returns 429] --> B{Parseable reset time<br/>in response body?}
+    B -- yes --> C[Ban until the exact reset time]
+    B -- no --> D["Ban by error-code duration<br/>unknown errors use fallback_ban_minutes"]
+    C --> E[Scheduler filters the key]
     D --> E
-    E --> F[到达恢复时间后<br/>自动重新启用]
+    E --> F[Automatically re-enabled<br/>after the reset time]
 ```
 
-## 验证安装
+## Verifying the install
 
-重启 CLIProxyAPI 后，建议依次检查：
+After restarting CLIProxyAPI, check in order:
 
-1. 日志中是否出现插件加载和注册成功的信息。
-2. `/v1/models` 是否仍能正常访问。
-3. 状态页面是否可以打开。
-4. 发送一次真实请求，确认原有调度功能正常。
-5. 出现 ARK 429 后，确认对应 Key 出现在状态页并被后续调度过滤。
+1. Plugin load and registration messages appear in the logs.
+2. `/v1/models` still works.
+3. The status page opens.
+4. A real request confirms scheduling works as before.
+5. After an ARK 429, the key appears on the status page and is filtered from subsequent scheduling.
 
-仅看到插件加载成功并不能证明完整链路正常，最好使用真实请求验证 usage hook 和 scheduler。
+Seeing the plugin load is not enough to prove the full chain works—verify the usage hook and scheduler with real requests.
 
-## Plugin Store 安装
+## Install from the Plugin Store
 
-如果 CPA 版本支持插件商店，可以直接在 CPA 管理面板的 Plugin Store 中搜索 `ark-429-autoban` 安装。
+If your CPA version supports the plugin store, search for `ark-429-autoban` in the CPA management panel.
 
-也可以手动添加自定义商店源：
+Or add a custom store source:
 
 ```yaml
 plugins:
@@ -149,11 +149,11 @@ plugins:
     - https://raw.githubusercontent.com/wyx1818/ark-429-autoban/main/registry.json
 ```
 
-## 已知限制
+## Known limitations
 
-- **不支持跨 priority fallback**：如果多个 ARK provider 配置了不同 `priority`，高优先级组全部被 ban 时，CPA 的 `availableAuthsForRouteModel` 不会将低优先级组传递给插件。这是 CPA scheduler 架构的限制（[issue #4196](https://github.com/router-for-me/CLIProxyAPI/issues/4196)），非插件 bug。建议相同模型的 ARK provider 使用相同 priority。
-- **Usage hook 是异步的**：CPA 通过 usage queue 异步投递 usage record，插件 ban 操作可能滞后于下一次 scheduler pick。在快速 retry 时，同一 key 可能被重复选中触发 429。
-- **插件接管调度期间绕过 CPA 的 SessionAffinitySelector**：排除被 ban key 必须让插件返回 `Handled`，因此插件在内部复刻了 routing strategy 和 session affinity 逻辑。与 CPA 原生实现仍有细微差异：粘性 TTL 在 pick 时续期（CPA 在请求成功后 Touch），且请求体中的 `prompt_cache_key`/`session_id` 等显式 session 字段插件不可见（由 CPA 的 derived session ID 兜底）。
+- **No cross-priority fallback**: If multiple ARK providers use different `priority` values and the highest-priority group is fully banned, CPA's `availableAuthsForRouteModel` never passes lower-priority groups to the plugin. This is a CPA scheduler architecture limitation ([issue #4196](https://github.com/router-for-me/CLIProxyAPI/issues/4196)), not a plugin bug. Prefer equal priorities and use `weight` for tiering.
+- **Usage hook is asynchronous**: CPA dispatches usage records via an async queue, so a ban may lag the next scheduler pick. During fast retries the same key may be reselected and hit another 429.
+- **CPA's SessionAffinitySelector is bypassed while the plugin handles scheduling**: Excluding banned keys requires the plugin to return `Handled`, so it replicates the routing strategy and session affinity internally. Subtle differences remain: the affinity TTL refreshes at pick time (CPA touches on successful results), and explicit session fields in the request body (`prompt_cache_key`, `session_id`, …) are not visible to the plugin (covered by CPA's derived session ID).
 
 ## License
 
