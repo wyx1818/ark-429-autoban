@@ -11,7 +11,7 @@ import (
 
 const (
 	pluginName            = "ark-429-autoban"
-	pluginVersion         = "0.2.0"
+	pluginVersion         = "0.2.1"
 	openaiCompatPrefix    = "openai-compatibility:"
 	arkHost               = "ark.cn-beijing.volces.com"
 	statusTooManyRequests = 429

@@ -22,13 +22,13 @@
   </div>
   <div class="table-wrap">
     <table>
-      <thead><tr><th>API Key</th><th>Key</th><th>Window</th><th>Reset At</th><th>Remaining</th><th>Action</th></tr></thead>
+      <thead><tr><th class="sortable" data-sort="auth">Auth ID<span class="sort-ind"><span class="sort-asc">▲</span><span class="sort-desc">▼</span></span></th><th>Key</th><th>Window</th><th class="sortable" data-sort="reset">Reset At<span class="sort-ind"><span class="sort-asc">▲</span><span class="sort-desc">▼</span></span></th><th class="sortable" data-sort="remaining">Remaining<span class="sort-ind"><span class="sort-asc">▲</span><span class="sort-desc">▼</span></span></th><th>Action</th></tr></thead>
       <tbody id="ban-tbody">
         {{if .Status.Bans}}
           {{range .Status.Bans}}
           <tr>
             <td class="auth-id">{{.APIKey}}</td><td class="auth-id{{if and .MaskedKey (ne .MaskedKey .KeyHint)}} has-tooltip{{end}}"><span{{if not .KeyHint}} class="muted"{{end}}>{{if .KeyHint}}{{.KeyHint}}{{else}}unknown{{end}}{{if and .MaskedKey (ne .MaskedKey .KeyHint)}}<span class="tooltip">{{.MaskedKey}}</span>{{end}}</span></td>
-            <td class="window-cell{{if .ErrorCode}} has-tooltip{{end}}"><span>{{.Window}}{{if .ErrorCode}}<span class="tooltip">{{.ErrorCode}}</span>{{end}}</span></td><td class="has-tooltip"><span>{{.ResetAt}}<span class="tooltip" data-unix="{{.ResetAtUnix}}"></span></span></td><td class="countdown" data-seconds="{{.RemainingSeconds}}"></td>
+            <td class="window-cell{{if .ErrorCode}} has-tooltip{{end}}"><span>{{.Window}}{{if .ErrorCode}}<span class="tooltip">{{.ErrorCode}}</span>{{end}}</span></td><td class="has-tooltip"><span><span class="reset-at-text" data-unix="{{.ResetAtUnix}}">{{.ResetAt}}</span><span class="tooltip" data-unix="{{.ResetAtUnix}}"></span></span></td><td class="countdown" data-seconds="{{.RemainingSeconds}}"></td>
             <td><button class="unban-btn" type="button" data-auth-id="{{.AuthID}}">Unban</button></td>
           </tr>
           {{end}}

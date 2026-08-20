@@ -86,6 +86,13 @@ th:nth-child(6), td:nth-child(6) { min-width: 90px; position: sticky; right: 0; 
 .has-tooltip .tooltip::after { content: ""; position: absolute; top: 100%; left: 50%; transform: translateX(-50%); border: 4px solid transparent; border-top-color: var(--tooltip-border); }
 .has-tooltip > span:hover .tooltip { display: block; }
 
+/* Sortable column headers */
+th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
+th.sortable:hover { opacity: 0.8; }
+th.sortable .sort-ind { display: inline-flex; flex-direction: column; vertical-align: middle; margin-left: 4px; font-size: 8px; line-height: 1; }
+th.sortable .sort-ind span { opacity: 0.3; }
+th.sortable .sort-ind span.active { opacity: 1; }
+
 /* Left-aligned variant for the first column: a centered long tooltip would
    overflow the table's left edge and get clipped. */
 .has-tooltip .tooltip.tooltip-left { left: 0; transform: none; }

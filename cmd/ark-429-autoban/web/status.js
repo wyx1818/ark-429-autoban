@@ -3,7 +3,8 @@
 
   var PLUGIN = "ark-429-autoban";
   var API_BASE = "/v0/management/plugins/" + PLUGIN;
-  var KEY_STORAGE = "ark429AutobanManagementKey";
+  // localStorage keys are kebab-case, prefixed with the plugin id.
+  var KEY_STORAGE = "ark-429-autoban-management-key";
   var ENC_PREFIX = "enc::v1::";
   var SECRET_SALT = "cli-proxy-api-webui::secure-storage";
 
@@ -168,6 +169,24 @@
     return s > 0 ? s + "s" : "";
   }
 
+  // Format timestamps in the viewer's local timezone (from the browser),
+  // not the server's +08:00 baked into the ban record.
+  function pad2(n) { return n < 10 ? "0" + n : "" + n; }
+
+  function fmtLocal(unix) {
+    var d = new Date(unix * 1000);
+    return d.getFullYear() + "-" + pad2(d.getMonth() + 1) + "-" + pad2(d.getDate()) +
+      " " + pad2(d.getHours()) + ":" + pad2(d.getMinutes());
+  }
+
+  function fmtLocalFull(unix) {
+    var tz = "";
+    try { tz = Intl.DateTimeFormat().resolvedOptions().timeZone || ""; } catch (_) {}
+    var d = new Date(unix * 1000);
+    var base = fmtLocal(unix) + ":" + pad2(d.getSeconds());
+    return tz ? base + " (" + tz + ")" : base;
+  }
+
   function cell(row, value, className) {
     var td = document.createElement("td");
     if (className) td.className = className;
@@ -178,6 +197,54 @@
 
   var refreshTimer = null;
   var refreshRemaining = 0;
+
+  // Column sorting, persisted to localStorage. Default: Remaining ascending
+  // (soonest recovery first).
+  var SORT_STORAGE_KEY = "ark-429-autoban-sort";
+  var sortState = { key: "remaining", dir: "asc" };
+  try {
+    var savedSort = JSON.parse(localStorage.getItem(SORT_STORAGE_KEY) || "null");
+    if (savedSort && (savedSort.key === "auth" || savedSort.key === "reset" || savedSort.key === "remaining") &&
+        (savedSort.dir === "asc" || savedSort.dir === "desc")) {
+      sortState = savedSort;
+    }
+  } catch (_) {}
+
+  var sortComparators = {
+    auth: function (a, b) { return a.auth_id.localeCompare(b.auth_id); },
+    reset: function (a, b) { return (a.reset_at_unix || 0) - (b.reset_at_unix || 0); },
+    remaining: function (a, b) { return (a.remaining_seconds || 0) - (b.remaining_seconds || 0); }
+  };
+
+  function applySort(bans) {
+    var cmp = sortComparators[sortState.key] || sortComparators.remaining;
+    var sorted = bans.slice().sort(cmp);
+    return sortState.dir === "desc" ? sorted.reverse() : sorted;
+  }
+
+  function updateSortIndicators() {
+    document.querySelectorAll("th.sortable").forEach(function (th) {
+      var asc = th.querySelector(".sort-asc");
+      var desc = th.querySelector(".sort-desc");
+      if (!asc || !desc) return;
+      asc.classList.toggle("active", th.dataset.sort === sortState.key && sortState.dir === "asc");
+      desc.classList.toggle("active", th.dataset.sort === sortState.key && sortState.dir === "desc");
+    });
+  }
+
+  document.querySelectorAll("th.sortable").forEach(function (th) {
+    th.addEventListener("click", function () {
+      var key = th.dataset.sort;
+      if (sortState.key === key) {
+        sortState.dir = sortState.dir === "asc" ? "desc" : "asc";
+      } else {
+        sortState = { key: key, dir: "asc" };
+      }
+      try { localStorage.setItem(SORT_STORAGE_KEY, JSON.stringify(sortState)); } catch (_) {}
+      updateSortIndicators();
+      refreshData();
+    });
+  });
 
   function render(data) {
     var tbody = document.getElementById("ban-tbody");
@@ -190,7 +257,7 @@
       tbody.appendChild(emptyRow);
       return;
     }
-    data.bans.forEach(function (ban) {
+    applySort(data.bans).forEach(function (ban) {
       var row = document.createElement("tr");
       // API Key column ("ark-plan #4"): hover shows the full CPA auth ID.
       var apiCell = cell(row, "", "auth-id has-tooltip");
@@ -224,15 +291,16 @@
         winTip.textContent = ban.error_code;
         winSpan.appendChild(winTip);
       }
-      cell(row, ban.reset_at || "", "has-tooltip");
+      cell(row, "", "has-tooltip");
       var resetSpan = row.lastChild;
       var resetInner = document.createElement("span");
-      resetInner.textContent = ban.reset_at || "";
-      resetSpan.textContent = "";
       var resetTip = document.createElement("span");
       resetTip.className = "tooltip";
       if (ban.reset_at_unix) {
-        resetTip.textContent = new Date(ban.reset_at_unix * 1000).toISOString();
+        resetInner.textContent = fmtLocal(ban.reset_at_unix);
+        resetTip.textContent = fmtLocalFull(ban.reset_at_unix);
+      } else {
+        resetInner.textContent = ban.reset_at || "";
       }
       resetInner.appendChild(resetTip);
       resetSpan.appendChild(resetInner);
@@ -348,11 +416,17 @@
   // Fill reset-at tooltips from data-unix.
   document.querySelectorAll(".tooltip[data-unix]").forEach(function (node) {
     var unix = Number(node.dataset.unix);
-    if (unix) node.textContent = new Date(unix * 1000).toISOString();
+    if (unix) node.textContent = fmtLocalFull(unix);
+  });
+  // Rewrite server-rendered reset times (+08:00) to the viewer's timezone.
+  document.querySelectorAll(".reset-at-text[data-unix]").forEach(function (node) {
+    var unix = Number(node.dataset.unix);
+    if (unix) node.textContent = fmtLocal(unix);
   });
   initKey();
   syncTheme();
   setInterval(syncTheme, 2000);
+  updateSortIndicators();
   if (mgmtKey) {
     startPolling();
     refreshData();
