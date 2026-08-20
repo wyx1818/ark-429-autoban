@@ -9,7 +9,7 @@
 </head>
 <body>
   <h1>ARK 429 Autoban <span class="version">v{{.Version}}</span></h1>
-  <div class="summary" id="summary">Active bans: {{.Status.Count}} · Scanned keys: {{.Status.ScannedKeys}}</div>
+  <div class="summary" id="summary">Management key required to view bans.</div>
   <div id="auth-notice" class="notice" hidden></div>
   <div class="key-row">
     <input id="mgmt-key" type="password" autocomplete="current-password" placeholder="Management key" aria-label="Management key">
@@ -24,17 +24,7 @@
     <table>
       <thead><tr><th class="sortable" data-sort="auth">Auth ID<span class="sort-ind"><span class="sort-asc">▲</span><span class="sort-desc">▼</span></span></th><th>Key</th><th>Window</th><th class="sortable" data-sort="reset">Reset At<span class="sort-ind"><span class="sort-asc">▲</span><span class="sort-desc">▼</span></span></th><th class="sortable" data-sort="remaining">Remaining<span class="sort-ind"><span class="sort-asc">▲</span><span class="sort-desc">▼</span></span></th><th>Action</th></tr></thead>
       <tbody id="ban-tbody">
-        {{if .Status.Bans}}
-          {{range .Status.Bans}}
-          <tr>
-            <td class="auth-id">{{.APIKey}}</td><td class="auth-id{{if and .MaskedKey (ne .MaskedKey .KeyHint)}} has-tooltip{{end}}"><span{{if not .KeyHint}} class="muted"{{end}}>{{if .KeyHint}}{{.KeyHint}}{{else}}unknown{{end}}{{if and .MaskedKey (ne .MaskedKey .KeyHint)}}<span class="tooltip">{{.MaskedKey}}</span>{{end}}</span></td>
-            <td class="window-cell{{if .ErrorCode}} has-tooltip{{end}}"><span>{{.Window}}{{if .ErrorCode}}<span class="tooltip">{{.ErrorCode}}</span>{{end}}</span></td><td class="has-tooltip"><span><span class="reset-at-text" data-unix="{{.ResetAtUnix}}">{{.ResetAt}}</span><span class="tooltip" data-unix="{{.ResetAtUnix}}"></span></span></td><td class="countdown" data-seconds="{{.RemainingSeconds}}"></td>
-            <td><button class="unban-btn" type="button" data-auth-id="{{.AuthID}}">Unban</button></td>
-          </tr>
-          {{end}}
-        {{else}}
-          <tr><td colspan="6" class="empty">No active bans. All credentials are available.</td></tr>
-        {{end}}
+        <tr><td colspan="6" class="empty">Management key required to view active bans.</td></tr>
       </tbody>
     </table>
   </div>

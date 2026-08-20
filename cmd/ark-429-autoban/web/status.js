@@ -93,12 +93,13 @@
     if (mgmtKey) {
       setNotice("Key saved.", false);
       startPolling();
-      refreshData();
     } else {
       try { localStorage.removeItem(KEY_STORAGE); } catch (_) {}
       stopPolling();
       setNotice("Key cleared.", false);
     }
+    renderLocked();
+    if (mgmtKey) refreshData();
   }
 
   document.getElementById("save-key-btn").addEventListener("click", saveKey);
@@ -220,6 +221,15 @@
     var cmp = sortComparators[sortState.key] || sortComparators.remaining;
     var sorted = bans.slice().sort(cmp);
     return sortState.dir === "desc" ? sorted.reverse() : sorted;
+  }
+
+  function renderLocked(message) {
+    var tbody = document.getElementById("ban-tbody");
+    document.getElementById("summary").textContent = "Management key required to view bans.";
+    tbody.replaceChildren();
+    var row = document.createElement("tr");
+    cell(row, message || "Management key required to view active bans.", "empty").colSpan = 6;
+    tbody.appendChild(row);
   }
 
   function updateSortIndicators() {
@@ -347,6 +357,10 @@
   var refreshInFlight = false;
 
   function refreshData() {
+    if (!mgmtKey) {
+      setNotice("No management key. Enter a key to view bans.", false);
+      return Promise.resolve();
+    }
     if (refreshInFlight) return Promise.resolve();
     refreshInFlight = true;
     var button = document.getElementById("refresh-btn");
@@ -410,19 +424,6 @@
     if (confirm("Unban all?")) postAction("/unban-all", null, "removed");
   });
 
-  document.querySelectorAll(".countdown[data-seconds]").forEach(function (node) {
-    node.textContent = remaining(Number(node.dataset.seconds));
-  });
-  // Fill reset-at tooltips from data-unix.
-  document.querySelectorAll(".tooltip[data-unix]").forEach(function (node) {
-    var unix = Number(node.dataset.unix);
-    if (unix) node.textContent = fmtLocalFull(unix);
-  });
-  // Rewrite server-rendered reset times (+08:00) to the viewer's timezone.
-  document.querySelectorAll(".reset-at-text[data-unix]").forEach(function (node) {
-    var unix = Number(node.dataset.unix);
-    if (unix) node.textContent = fmtLocal(unix);
-  });
   initKey();
   syncTheme();
   setInterval(syncTheme, 2000);

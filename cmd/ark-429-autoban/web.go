@@ -22,9 +22,7 @@ type statusPageData struct {
 
 func (p *plugin) statusPageResponse() pluginapi.ManagementResponse {
 	var body bytes.Buffer
-	err := statusTemplate.Execute(&body, statusPageData{
-		Plugin: pluginName, Version: pluginVersion, Status: p.currentBanStatus(),
-	})
+	err := statusTemplate.Execute(&body, statusPageData{Plugin: pluginName, Version: pluginVersion})
 	if err != nil {
 		return jsonManagementResponse(http.StatusInternalServerError, map[string]any{
 			"error": "template_error", "message": err.Error(),

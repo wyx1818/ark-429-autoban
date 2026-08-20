@@ -369,8 +369,15 @@ func TestManagementAndEmbeddedWeb(t *testing.T) {
 	if page.StatusCode != 200 || !strings.HasPrefix(page.Headers.Get("Content-Type"), "text/html") {
 		t.Fatalf("page=%+v", page)
 	}
-	if strings.Contains(string(page.Body), `<script>alert(1)</script>`) || !strings.Contains(string(page.Body), `&lt;script&gt;`) {
-		t.Fatal("status template did not escape dynamic content")
+	pageBody := string(page.Body)
+	for _, leak := range []string{
+		authID,
+		`<img src=x onerror=alert(1)>`,
+		`<b>monthly</b>`,
+	} {
+		if strings.Contains(pageBody, leak) {
+			t.Fatalf("unauthenticated status page leaked dynamic ban data: %q", leak)
+		}
 	}
 	for _, tc := range []struct{ path, contentType string }{{"/status.css", "text/css"}, {"/status.js", "text/javascript"}} {
 		resp := p.dispatchManagement(pluginapi.ManagementRequest{Method: http.MethodGet, Path: "/v0/resource/plugins/" + pluginName + tc.path})
@@ -417,10 +424,10 @@ func TestManagementRegistrationIncludesAssets(t *testing.T) {
 	}
 	// Dynamic routes must be registered as authenticated management routes.
 	mgmtWant := map[string]bool{
-		managementRoutePrefix + "/bans":           false,
-		managementRoutePrefix + "/unban":          false,
-		managementRoutePrefix + "/unban-all":      false,
-		managementRoutePrefix + "/reload-config":  false,
+		managementRoutePrefix + "/bans":          false,
+		managementRoutePrefix + "/unban":         false,
+		managementRoutePrefix + "/unban-all":     false,
+		managementRoutePrefix + "/reload-config": false,
 	}
 	for _, route := range registration.Routes {
 		if _, ok := mgmtWant[route.Path]; ok {
@@ -431,6 +438,63 @@ func TestManagementRegistrationIncludesAssets(t *testing.T) {
 		if !found {
 			t.Errorf("missing management route %s", path)
 		}
+	}
+}
+
+func TestManagementAndResourcePathMatchingIsExact(t *testing.T) {
+	tests := []struct {
+		path     string
+		suffix   string
+		mgmtWant bool
+		resource bool
+	}{
+		{managementRoutePrefix + "/bans", "/bans", true, true},
+		{managementRoutePrefix + "/bans/", "/bans", true, true},
+		{managementRoutePrefix + "/bans?x=1", "/bans", false, true},
+		{"/v0/management/plugins/" + pluginName + "/bans", "/bans", true, false},
+		{"/v0/management/plugins/" + pluginName + "/bans/", "/bans", true, false},
+		{"/v0/management/plugins/not-" + pluginName + "/bans", "/bans", false, false},
+		{"/v0/resource/plugins/" + pluginName + "/status", "/status", false, true},
+		{"/v0/resource/plugins/" + pluginName + "/status?cache=1", "/status", false, true},
+		{managementRoutePrefix + "/status.js", "/status.js", true, true},
+		{"/v0/resource/plugins/" + pluginName + "/status.js", "/status.js", false, true},
+		{"/v0/resource/plugins/not-" + pluginName + "/status", "/status", false, false},
+	}
+	for _, tc := range tests {
+		if got := matchesManagementPath(tc.path, tc.suffix); got != tc.mgmtWant {
+			t.Errorf("matchesManagementPath(%q, %q) = %v, want %v", tc.path, tc.suffix, got, tc.mgmtWant)
+		}
+		if got := matchesResourcePath(tc.path, tc.suffix); got != tc.resource {
+			t.Errorf("matchesResourcePath(%q, %q) = %v, want %v", tc.path, tc.suffix, got, tc.resource)
+		}
+	}
+}
+
+func TestResourcePathsCannotReachManagementOperations(t *testing.T) {
+	now := time.Now()
+	p := fixedPlugin(now)
+	authID := "openai-compatibility:ark-code:secret"
+	p.bans.set(authID, banEntry{ResetAt: now.Add(time.Hour), Window: "monthly"})
+
+	for _, tc := range []struct {
+		method string
+		path   string
+	}{
+		{http.MethodGet, "/v0/resource/plugins/" + pluginName + "/bans"},
+		{http.MethodGet, "/v0/resource/plugins/" + pluginName + "/unban"},
+		{http.MethodGet, "/v0/resource/plugins/" + pluginName + "/unban-all"},
+		{http.MethodGet, "/v0/resource/plugins/" + pluginName + "/reload-config"},
+		{http.MethodPost, "/v0/resource/plugins/" + pluginName + "/unban"},
+		{http.MethodPost, "/v0/resource/plugins/" + pluginName + "/unban-all"},
+		{http.MethodPost, "/v0/resource/plugins/" + pluginName + "/reload-config"},
+	} {
+		resp := p.dispatchManagement(pluginapi.ManagementRequest{Method: tc.method, Path: tc.path})
+		if resp.StatusCode != http.StatusNotFound {
+			t.Errorf("%s %s: got status %d, want 404", tc.method, tc.path, resp.StatusCode)
+		}
+	}
+	if _, ok := p.bans.lookup(authID); !ok {
+		t.Fatal("resource request mutated ban state")
 	}
 }
 

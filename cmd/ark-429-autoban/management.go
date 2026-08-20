@@ -124,11 +124,11 @@ func (p *plugin) dispatchManagement(req pluginapi.ManagementRequest) pluginapi.M
 }
 
 type managementBanStatus struct {
-	Plugin       string              `json:"plugin"`
-	Version      string              `json:"version"`
-	Count        int                 `json:"count"`
-	ScannedKeys  int                 `json:"scanned_keys"`
-	Bans         []managementBanInfo `json:"bans"`
+	Plugin      string              `json:"plugin"`
+	Version     string              `json:"version"`
+	Count       int                 `json:"count"`
+	ScannedKeys int                 `json:"scanned_keys"`
+	Bans        []managementBanInfo `json:"bans"`
 }
 
 type managementBanInfo struct {
@@ -269,23 +269,25 @@ func matchesManagementPath(path, suffix string) bool {
 	if !strings.HasPrefix(suffix, "/") {
 		suffix = "/" + suffix
 	}
-	return strings.HasSuffix(path, managementRoutePrefix+suffix)
+	want := managementRoutePrefix + suffix
+	return path == want || path == "/v0/management"+want
 }
 
 func matchesResourcePath(path, suffix string) bool {
-	path = strings.TrimRight(strings.TrimSpace(path), "/")
+	path = strings.TrimSpace(path)
 	// Strip query string (e.g. ?v=2 for cache busting).
 	if idx := strings.Index(path, "?"); idx >= 0 {
 		path = path[:idx]
 	}
+	path = strings.TrimRight(path, "/")
 	if path == "" {
 		return false
 	}
 	if !strings.HasPrefix(suffix, "/") {
 		suffix = "/" + suffix
 	}
-	return strings.HasSuffix(path, "/v0/resource/plugins/"+pluginName+suffix) ||
-		strings.HasSuffix(path, "/plugins/"+pluginName+suffix)
+	return path == "/v0/resource/plugins/"+pluginName+suffix ||
+		path == "/plugins/"+pluginName+suffix
 }
 
 func jsonManagementResponse(status int, v any) pluginapi.ManagementResponse {
