@@ -56,7 +56,7 @@ func (p *plugin) handleUsage(raw []byte) ([]byte, error) {
 
 		minutes := int(fallbackDuration.Minutes())
 		slog.Warn("ark-429-autoban: could not parse reset time from 429 body, falling back to ban",
-			"auth_id", authID, "key_hint", p.keyHintFor(authID),
+			"auth_id", authID, "api_key", p.apiKeyFor(authID), "comment", p.keyCommentFor(authID),
 			"error_code", errorCode,
 			"fallback_minutes", minutes,
 			"body_preview", truncateBody(record.Failure.Body, 300))
@@ -67,12 +67,10 @@ func (p *plugin) handleUsage(raw []byte) ([]byte, error) {
 			ResetAt:   now.Add(fallbackDuration),
 			Window:    windowLabel,
 			BannedAt:  now,
-			KeyHint:   p.keyHintFor(authID),
 			ErrorCode: errorCode,
 		}
 	} else {
 		entry.BannedAt = p.now()
-		entry.KeyHint = p.keyHintFor(authID)
 		entry.ErrorCode = errorCode
 	}
 
@@ -84,11 +82,7 @@ func (p *plugin) handleUsage(raw []byte) ([]byte, error) {
 				return okEnvelope(map[string]any{})
 			}
 			// New reset time is later - extend the ban.
-			// Preserve original BannedAt and KeyHint if already set.
 			entry.BannedAt = existing.BannedAt
-			if entry.KeyHint == "" {
-				entry.KeyHint = existing.KeyHint
-			}
 			slog.Info("ark-429-autoban: extending ban for credential",
 				"auth_id", authID,
 				"old_reset_at", existing.ResetAt.Format(time.RFC3339),
@@ -101,7 +95,8 @@ func (p *plugin) handleUsage(raw []byte) ([]byte, error) {
 	p.markDirty()
 	slog.Info("ark-429-autoban: banned credential after 429",
 		"auth_id", authID,
-		"key_hint", entry.KeyHint,
+		"api_key", p.apiKeyFor(authID),
+		"comment", p.keyCommentFor(authID),
 		"error_code", entry.ErrorCode,
 		"window", entry.Window,
 		"reset_at", entry.ResetAt.Format(time.RFC3339))

@@ -18,15 +18,34 @@
   <div class="actions">
     <button id="refresh-btn" type="button">Refresh</button>
     <button id="unban-all-btn" class="danger" type="button">Unban All</button>
-    <button id="reload-btn" class="right" type="button">Reload Config</button>
+    <span class="actions-spacer" aria-hidden="true"></span>
+    <button id="keys-btn" type="button">View Keys</button>
+    <button id="reload-btn" type="button">Reload Config</button>
   </div>
   <div class="table-wrap">
     <table>
-      <thead><tr><th class="sortable" data-sort="auth">Auth ID<span class="sort-ind"><span class="sort-asc">▲</span><span class="sort-desc">▼</span></span></th><th>Key</th><th>Window</th><th class="sortable" data-sort="reset">Reset At<span class="sort-ind"><span class="sort-asc">▲</span><span class="sort-desc">▼</span></span></th><th class="sortable" data-sort="remaining">Remaining<span class="sort-ind"><span class="sort-asc">▲</span><span class="sort-desc">▼</span></span></th><th>Action</th></tr></thead>
+      <thead><tr><th class="sortable" data-sort="auth">Auth ID<span class="sort-ind"><span class="sort-asc">▲</span><span class="sort-desc">▼</span></span></th><th>Comment</th><th>Window</th><th class="sortable" data-sort="reset">Reset At<span class="sort-ind"><span class="sort-asc">▲</span><span class="sort-desc">▼</span></span></th><th class="sortable" data-sort="remaining">Remaining<span class="sort-ind"><span class="sort-asc">▲</span><span class="sort-desc">▼</span></span></th><th>Action</th></tr></thead>
       <tbody id="ban-tbody">
         <tr><td colspan="6" class="empty">Management key required to view active bans.</td></tr>
       </tbody>
     </table>
   </div>
+  <dialog id="keys-dialog" aria-labelledby="keys-dialog-title">
+    <div class="dialog-header">
+      <h2 id="keys-dialog-title">ARK Keys</h2>
+      <button id="keys-close-btn" type="button" aria-label="Close">Close</button>
+    </div>
+    <div id="keys-dialog-status" class="dialog-status" role="status">Loading keys...</div>
+    <div class="table-wrap keys-table-wrap">
+      <table class="keys-table">
+        <thead>
+          <tr><th>API Key</th><th>Masked Key</th><th>Comment</th></tr>
+        </thead>
+        <tbody id="keys-tbody">
+          <tr><td colspan="3" class="empty">Loading keys...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </dialog>
 </body>
 </html>

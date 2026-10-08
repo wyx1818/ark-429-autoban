@@ -11,7 +11,7 @@ import (
 
 const (
 	pluginName            = "ark-429-autoban"
-	pluginVersion         = "0.2.1"
+	pluginVersion         = "0.2.2"
 	openaiCompatPrefix    = "openai-compatibility:"
 	arkHost               = "ark.cn-beijing.volces.com"
 	statusTooManyRequests = 429
@@ -47,8 +47,7 @@ var resetTimeRe = regexp.MustCompile(`It will reset at (\d{4}-\d{2}-\d{2} \d{2}:
 type plugin struct {
 	bans          banState
 	mu            sync.RWMutex
-	keyHints      map[string]string
-	keyLabels     map[string]string
+	keyComments   map[string]string
 	apiKeys       map[string]string
 	maskedKeys    map[string]string
 	arkAuths      map[string]bool
@@ -68,8 +67,7 @@ type plugin struct {
 
 func newPlugin() *plugin {
 	return &plugin{
-		keyHints:      map[string]string{},
-		keyLabels:     map[string]string{},
+		keyComments:   map[string]string{},
 		apiKeys:       map[string]string{},
 		maskedKeys:    map[string]string{},
 		arkAuths:      map[string]bool{},
@@ -96,7 +94,6 @@ type banEntry struct {
 	ResetAt   time.Time
 	Window    string
 	BannedAt  time.Time
-	KeyHint   string
 	ErrorCode string
 }
 
@@ -114,24 +111,6 @@ func (s *banState) set(authID string, e banEntry) {
 		s.bans = make(map[string]banEntry)
 	}
 	s.bans[authID] = e
-}
-
-// backfillKeyHint updates the KeyHint of an existing ban entry if it's empty.
-// Called from the scheduler hook when it sees a candidate's api_key attribute.
-func (s *banState) backfillKeyHint(authID, hint string) {
-	if hint == "" {
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, ok := s.bans[authID]
-	if !ok || e.KeyHint != "" {
-		return
-	}
-	e.KeyHint = hint
-	s.bans[authID] = e
-	slog.Info("ark-429-autoban: backfilled key hint for banned credential",
-		"auth_id", authID, "key_hint", hint)
 }
 
 func (s *banState) clearIfExpired(authID string, now time.Time) (stillBanned bool) {

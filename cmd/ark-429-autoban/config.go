@@ -36,9 +36,9 @@ func (p *plugin) configure(raw []byte) {
 		return
 	}
 
-	// Clear old labels.
+	// Clear old key metadata.
 	p.mu.Lock()
-	p.keyLabels = make(map[string]string)
+	p.keyComments = make(map[string]string)
 	p.apiKeys = make(map[string]string)
 	p.maskedKeys = make(map[string]string)
 	p.arkAuths = make(map[string]bool)
@@ -66,12 +66,12 @@ func (p *plugin) configure(raw []byte) {
 
 	count := 0
 	if cfg.ConfigPath != "" {
-		count = p.autoComputeKeyLabels(cfg.ConfigPath)
+		count = p.autoComputeKeyMetadata(cfg.ConfigPath)
 		p.mu.Lock()
 		p.scannedKeys = count
 		p.mu.Unlock()
 	}
-	slog.Info("ark-429-autoban: loaded key labels", "count", count, "auto_computed", cfg.ConfigPath != "")
+	slog.Info("ark-429-autoban: loaded key metadata", "count", count, "auto_computed", cfg.ConfigPath != "")
 
 	// Load persisted bans and start background saver.
 	persistDir := p.resolvePersistDir()
@@ -104,11 +104,10 @@ func parsePluginConfigYAML(yaml string, cfg *pluginConfig) {
 	}
 }
 
-// autoComputeKeyLabels reads the CPA config file, computes auth IDs for all
+// autoComputeKeyMetadata reads the CPA config file, computes auth IDs for all
 // openai-compatibility keys whose base-url uses the official ARK host, and stores
-// auth_id => comment mappings.
-// Returns the number of labels computed.
-func (p *plugin) autoComputeKeyLabels(configPath string) int {
+// auth_id => provider/index, masked key, and comment.
+func (p *plugin) autoComputeKeyMetadata(configPath string) int {
 	data, err := p.readFile(configPath)
 	if err != nil {
 		slog.Warn("ark-429-autoban: failed to read CPA config for auto-compute",
@@ -148,19 +147,31 @@ func (p *plugin) autoComputeKeyLabels(configPath string) int {
 	for _, line := range lines {
 		// Track the top-level openai-compatibility block: provider names are
 		// only meaningful inside it (model entries also use "- name:").
-		if len(line) > 0 && line[0] != ' ' && line[0] != '\t' && line[0] != '#' {
+		if len(line) > 0 && line[0] != ' ' && line[0] != '	' && line[0] != '#' {
 			trimmed := strings.TrimSpace(line)
 			inOpenAICompat = trimmed == "openai-compatibility:" || strings.HasPrefix(trimmed, "openai-compatibility: ")
 			currentProvider = ""
 			currentBase = ""
 			continue
 		}
+		// v8 layout: openai-compatibility lives under the top-level api-keys
+		// mapping, indented one level ("    openai-compatibility:").
+		if !inOpenAICompat {
+			trimmed := strings.TrimSpace(line)
+			if trimmed == "openai-compatibility:" {
+				inOpenAICompat = true
+				currentProvider = ""
+				currentBase = ""
+			}
+		}
 		if !inOpenAICompat {
 			continue
 		}
 		// Detect provider name: entries are exactly one level deep
 		// ("  - name:"), model list entries are deeper and ignored here.
-		if strings.HasPrefix(line, "  - name:") {
+		// v8 layout nests the provider list one level deeper (8 spaces).
+		isProviderEntry := strings.HasPrefix(line, "  - name:") || strings.HasPrefix(line, "        - name:")
+		if isProviderEntry {
 			rest := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "- name:"))
 			rest = strings.Trim(rest, "\"' ")
 			if rest != "" {
@@ -213,13 +224,8 @@ func (p *plugin) autoComputeKeyLabels(configPath string) int {
 				continue
 			}
 
-			// Use comment if available, otherwise abbreviate the key.
-			label := abbreviateKey(key)
-			if comment != "" {
-				label = comment
-			}
 			p.mu.Lock()
-			p.keyLabels[authID] = label
+			p.keyComments[authID] = comment
 			p.apiKeys[authID] = fmt.Sprintf("%s #%d", currentProvider, keyIndex)
 			p.maskedKeys[authID] = abbreviateKey(key)
 			p.arkAuths[authID] = true
@@ -228,7 +234,7 @@ func (p *plugin) autoComputeKeyLabels(configPath string) int {
 		}
 	}
 
-	slog.Info("ark-429-autoban: auto-computed key labels from CPA config",
+	slog.Info("ark-429-autoban: auto-computed key metadata from CPA config",
 		"path", configPath, "count", count)
 	return count
 }

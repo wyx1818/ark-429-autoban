@@ -13,19 +13,19 @@ When an ARK key returns 429 due to quota exhaustion or server overload, the plug
 - **Precise ban duration**: Parses the exact reset time from ARK's 429 response body (`It will reset at ...`). Falls back to per-error-code durations when no reset time is available.
 - **Per-error-code fallback**: `ServerOverloaded` → 5 min, `RateLimitExceeded`/`Throttled`/`RequestLimitExceeded` → 10 min, unknown errors → configurable `fallback_ban_minutes` (default 30 min).
 - **Ban only extends, never shortens**: A new 429 with a later reset time extends the ban; an earlier one is ignored. Original `BannedAt` is preserved.
-- **Key label auto-compute**: Reads `config.yaml` comments (e.g. `# iaas-app-center-test`) as human-readable labels for the status page—no need to identify keys by hash.
+- **Key metadata auto-compute**: Reads `config.yaml` comments (e.g. `# iaas-app-center-test`) as human-readable comments for the status page—no need to identify keys by hash.
 - **Lazy unban**: No timers. Ban expiry is checked on each scheduler pick—past expiry means the key goes back to the pool automatically.
 - **Follows CPA routing strategy**: When bans force the plugin to take over scheduling, it runs the same algorithm configured in CPA's `routing.strategy`—`round-robin`, `weighted-round-robin` (smooth WRR with per-key `weight`), or `fill-first`—over the ban-filtered candidate set.
 - **Session affinity preserved**: When CPA's `routing.session-affinity` is enabled, the plugin keeps session-to-key bindings (including CPA's derived session IDs, so header-less clients still stick) with the configured `session-affinity-ttl`. A binding whose key gets banned is reselected via the configured strategy.
 - **Ban persistence**: Bans are written to `ark-429-autoban-bans.json` (next to the plugin dir) and restored on restart—CPA restarts no longer wipe ban state.
 - **Non-intrusive**: Only processes `openai-compatibility` credentials whose Base URL uses `https://ark.cn-beijing.volces.com`. Recognition is purely by Base URL—any provider name works (`ark-code`, `ark-plan`, …), and non-ARK credentials (e.g. OpenRouter) are never touched.
-- **Management UI**: Embedded status page at `/v0/resource/plugins/ark-429-autoban/status` with ban list, countdown, key labels, manual unban, and config reload. Dark mode follows the CPA management panel.
+- **Management UI**: Embedded status page at `/v0/resource/plugins/ark-429-autoban/status` with ban list, countdown, key inventory, manual unban, and config reload. Dark mode follows the CPA management panel.
 
 ## Configuration
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `config_path` | string | — | Path to CPA's config.yaml. Used to scan ARK providers, Base URLs, API keys, and trailing comments for credential detection and status-page labels. |
+| `config_path` | string | — | Path to CPA's config.yaml. Used to scan ARK providers, Base URLs, API keys, and trailing comments for credential detection and status-page comments. |
 | `fallback_ban_minutes` | integer | 30 | Generic ban duration (minutes) for unknown 429 errors without a parseable reset time. Known errors use built-in durations: `ServerOverloaded` 5 min; `RateLimitExceeded`, `Throttled`, `RequestLimitExceeded` 10 min. |
 
 ## Usage
@@ -71,7 +71,7 @@ plugins:
       fallback_ban_minutes: 30  # optional, default 30
 ```
 
-`config_path` must be readable by the CLIProxyAPI process. The plugin scans every provider in the file's `openai-compatibility:` block; any provider whose Base URL belongs to `https://ark.cn-beijing.volces.com` is recognized as an ARK credential (provider names don't matter—`ark-code`, `ark-plan`, or anything else), and trailing comments on API key lines become human-readable labels on the status page.
+`config_path` must be readable by the CLIProxyAPI process. The plugin scans every provider in the file's `openai-compatibility:` block; any provider whose Base URL belongs to `https://ark.cn-beijing.volces.com` is recognized as an ARK credential (provider names don't matter—`ark-code`, `ark-plan`, or anything else), and trailing comments on API key lines become human-readable comments on the status page.
 
 The plugin also reads the file's `routing:` block so its takeover scheduling stays consistent with CPA behavior:
 
@@ -107,10 +107,11 @@ Once loaded, open **ARK 429 Autoban** in the CPA management UI, or visit:
 
 The status page supports:
 
-- Viewing currently banned keys (account comment labels; hover the API Key column for the full auth ID, hover the Key column for the masked key)
+- Viewing currently banned keys (provider/index, comment, and masked key; hover the API Key column for the full auth ID)
 - Ban reason, reset time, and remaining countdown (auto-refreshes every 30s)
 - Manual unban for a single key or all keys
-- Reloading `config_path` to refresh labels and routing settings
+- Reloading `config_path` to refresh key metadata and routing settings
+- Viewing all discovered keys in a dialog with provider/index, masked key, and comment
 
 ## How it works
 

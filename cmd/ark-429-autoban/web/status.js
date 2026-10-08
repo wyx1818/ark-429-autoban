@@ -279,12 +279,12 @@
       apiSpan.appendChild(apiTip);
       apiCell.appendChild(apiSpan);
       var keyCell = cell(row, "", "auth-id");
-      if (ban.masked_key && ban.masked_key !== ban.key_hint) keyCell.className += " has-tooltip";
+      if (ban.comment && ban.masked_key && ban.masked_key !== ban.comment) keyCell.className += " has-tooltip";
       var keySpan = document.createElement("span");
-      keySpan.textContent = ban.key_hint || "unknown";
-      if (!ban.key_hint) keySpan.className = "muted";
+      keySpan.textContent = ban.comment || ban.masked_key || "unknown";
+      if (!ban.comment && !ban.masked_key) keySpan.className = "muted";
       keyCell.appendChild(keySpan);
-      if (ban.masked_key && ban.masked_key !== ban.key_hint) {
+      if (ban.comment && ban.masked_key && ban.masked_key !== ban.comment) {
         var tip = document.createElement("span");
         tip.className = "tooltip";
         tip.textContent = ban.masked_key;
@@ -325,6 +325,83 @@
       tbody.appendChild(row);
     });
   }
+
+  // --- key inventory dialog -----------------------------------
+
+  var keysInFlight = false;
+
+  function renderKeys(data) {
+    var tbody = document.getElementById("keys-tbody");
+    var status = document.getElementById("keys-dialog-status");
+    tbody.replaceChildren();
+    status.textContent = "Keys: " + (data.count || 0);
+    if (!data.keys || !data.keys.length) {
+      var row = document.createElement("tr");
+      cell(row, "No ARK keys found. Reload config after adding keys.", "empty").colSpan = 3;
+      tbody.appendChild(row);
+      return;
+    }
+    data.keys.forEach(function (key) {
+      var row = document.createElement("tr");
+      cell(row, key.api_key || "unknown", "auth-id");
+      cell(row, key.masked_key || "unknown", "auth-id");
+      var comment = cell(row, key.comment || "-", "key-comment");
+      if (!key.comment) comment.className += " muted";
+      tbody.appendChild(row);
+    });
+  }
+
+  function loadKeys() {
+    if (!mgmtKey) {
+      setNotice("No management key. Enter a key to view keys.", false);
+      return Promise.resolve();
+    }
+    if (keysInFlight) return Promise.resolve();
+    keysInFlight = true;
+    var button = document.getElementById("keys-btn");
+    var status = document.getElementById("keys-dialog-status");
+    button.disabled = true;
+    button.textContent = "Loading...";
+    status.textContent = "Loading keys...";
+    return apiFetch("/keys")
+      .then(function (response) {
+        if (!response.ok) {
+          return serverError(response).then(function (msg) {
+            status.textContent = msg;
+            setNotice(msg, true);
+            return null;
+          });
+        }
+        setNotice("");
+        return response.json();
+      })
+      .then(function (data) { if (data) renderKeys(data); })
+      .catch(function () {
+        status.textContent = "Request failed. Check network/panel connection.";
+        setNotice("Request failed. Check network/panel connection.", true);
+      })
+      .finally(function () {
+        keysInFlight = false;
+        button.disabled = false;
+        button.textContent = "View Keys";
+      });
+  }
+
+  document.getElementById("keys-btn").addEventListener("click", function () {
+    if (!mgmtKey) {
+      setNotice("No management key. Enter a key to view keys.", false);
+      return;
+    }
+    var dialog = document.getElementById("keys-dialog");
+    if (!dialog.open) dialog.showModal();
+    loadKeys();
+  });
+  document.getElementById("keys-close-btn").addEventListener("click", function () {
+    document.getElementById("keys-dialog").close();
+  });
+  document.getElementById("keys-dialog").addEventListener("click", function (event) {
+    if (event.target === this) this.close();
+  });
 
   var REFRESH_INTERVAL = 30000;
 
@@ -399,7 +476,7 @@
         return response.json().then(function (data) {
           if (message && data && typeof data[message] !== "undefined") {
             setNotice(message === "reloaded"
-              ? "Reloaded " + data[message] + " key labels."
+              ? "Reloaded " + data[message] + " keys."
               : "Removed " + data[message] + " ban(s).");
           } else {
             setNotice("");
@@ -418,7 +495,7 @@
   });
   document.getElementById("refresh-btn").addEventListener("click", refreshData);
   document.getElementById("reload-btn").addEventListener("click", function () {
-    if (confirm("Reload key labels from CPA config?")) postAction("/reload-config", null, "reloaded");
+    if (confirm("Reload key metadata from CPA config?")) postAction("/reload-config", null, "reloaded");
   });
   document.getElementById("unban-all-btn").addEventListener("click", function () {
     if (confirm("Unban all?")) postAction("/unban-all", null, "removed");

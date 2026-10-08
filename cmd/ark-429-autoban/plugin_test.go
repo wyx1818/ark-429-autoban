@@ -322,8 +322,14 @@ func TestConfigAutoCompute(t *testing.T) {
 		t.Fatalf("apiKeys=%d", len(p.apiKeys))
 	}
 	for authID := range p.apiKeys {
-		if p.keyLabels[authID] != "automatic" {
-			t.Fatalf("auto label=%q", p.keyLabels[authID])
+		if p.keyComments[authID] != "automatic" {
+			t.Fatalf("auto comment=%q", p.keyComments[authID])
+		}
+		if p.apiKeys[authID] != "ark-code #1" {
+			t.Fatalf("api key=%q", p.apiKeys[authID])
+		}
+		if p.maskedKeys[authID] != "arksk-...5678" {
+			t.Fatalf("masked key=%q", p.maskedKeys[authID])
 		}
 		if !p.arkAuths[authID] {
 			t.Fatal("auth ID not in arkAuths")
@@ -358,7 +364,7 @@ func TestManagementAndEmbeddedWeb(t *testing.T) {
 	authID := `openai-compatibility:ark-code:<script>alert(1)</script>`
 	p.bans.set(authID, banEntry{ResetAt: now.Add(time.Hour), Window: `<b>monthly</b>`})
 	p.mu.Lock()
-	p.keyLabels[authID] = `<img src=x onerror=alert(1)>`
+	p.keyComments[authID] = `<img src=x onerror=alert(1)>`
 	p.mu.Unlock()
 
 	status := p.currentBanStatus()
@@ -409,6 +415,85 @@ func TestManagementAndEmbeddedWeb(t *testing.T) {
 	}
 }
 
+func TestManagementKeyStatus(t *testing.T) {
+	p := newPlugin()
+	auth1 := "openai-compatibility:ark-code:one"
+	auth2 := "openai-compatibility:ark-plan:two"
+	p.mu.Lock()
+	p.apiKeys[auth1] = "ark-code #1"
+	p.maskedKeys[auth1] = "ark-b9...21449"
+	p.keyComments[auth1] = "iaas-app-center-test"
+	p.apiKeys[auth2] = "ark-plan #2"
+	p.maskedKeys[auth2] = "ark-c3...99887"
+	p.mu.Unlock()
+
+	got := p.currentKeyStatus()
+	if got.Plugin != pluginName || got.Version != pluginVersion || got.Count != 2 || len(got.Keys) != 2 {
+		t.Fatalf("status=%+v", got)
+	}
+	want := []managementKeyInfo{
+		{APIKey: "ark-code #1", MaskedKey: "ark-b9...21449", Comment: "iaas-app-center-test"},
+		{APIKey: "ark-plan #2", MaskedKey: "ark-c3...99887"},
+	}
+	for i, key := range want {
+		if got.Keys[i] != key {
+			t.Fatalf("key[%d]=%+v, want %+v", i, got.Keys[i], key)
+		}
+	}
+
+	resp := p.dispatchManagement(pluginapi.ManagementRequest{Method: http.MethodGet, Path: managementRoutePrefix + "/keys"})
+	if resp.StatusCode != http.StatusOK || !strings.HasPrefix(resp.Headers.Get("Content-Type"), "application/json") {
+		t.Fatalf("response=%+v", resp)
+	}
+	body := string(resp.Body)
+	for _, want := range []string{"ark-code #1", "ark-b9...21449", "iaas-app-center-test", "ark-plan #2", "ark-c3...99887"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("response missing %q: %s", want, body)
+		}
+	}
+	if strings.Contains(body, "key_hint") {
+		t.Fatalf("response still uses key_hint: %s", body)
+	}
+}
+
+func TestCompareAPIKeys(t *testing.T) {
+	tests := []struct {
+		a, b string
+		want int
+	}{
+		{"ark-code #2", "ark-code #10", -1},
+		{"ark-code #10", "ark-code #2", 1},
+		{"ark-code #1", "ark-plan #1", -1},
+		{"ark-code #1", "ark-code #1", 0},
+		{"fallback-a", "fallback-b", -1},
+	}
+	for _, tt := range tests {
+		if got := compareAPIKeys(tt.a, tt.b); got != tt.want {
+			t.Fatalf("compare(%q, %q)=%d, want %d", tt.a, tt.b, got, tt.want)
+		}
+	}
+}
+
+func TestManagementBanStatusUsesCanonicalKeyFields(t *testing.T) {
+	p := fixedPlugin(time.Now())
+	authID := "openai-compatibility:ark-code:test"
+	p.bans.set(authID, banEntry{ResetAt: p.now().Add(time.Hour), Window: "monthly"})
+	p.mu.Lock()
+	p.apiKeys[authID] = "ark-code #3"
+	p.maskedKeys[authID] = "ark-b9...21449"
+	p.keyComments[authID] = "iaas-app-center-test"
+	p.mu.Unlock()
+
+	status := p.currentBanStatus()
+	if status.Count != 1 {
+		t.Fatalf("count=%d", status.Count)
+	}
+	ban := status.Bans[0]
+	if ban.APIKey != "ark-code #3" || ban.MaskedKey != "ark-b9...21449" || ban.Comment != "iaas-app-center-test" {
+		t.Fatalf("ban=%+v", ban)
+	}
+}
+
 func TestManagementRegistrationIncludesAssets(t *testing.T) {
 	registration := managementRegistration()
 	want := map[string]bool{"/status": false, "/status.css": false, "/status.js": false}
@@ -424,6 +509,7 @@ func TestManagementRegistrationIncludesAssets(t *testing.T) {
 	}
 	// Dynamic routes must be registered as authenticated management routes.
 	mgmtWant := map[string]bool{
+		managementRoutePrefix + "/keys":          false,
 		managementRoutePrefix + "/bans":          false,
 		managementRoutePrefix + "/unban":         false,
 		managementRoutePrefix + "/unban-all":     false,
@@ -480,6 +566,7 @@ func TestResourcePathsCannotReachManagementOperations(t *testing.T) {
 		method string
 		path   string
 	}{
+		{http.MethodGet, "/v0/resource/plugins/" + pluginName + "/keys"},
 		{http.MethodGet, "/v0/resource/plugins/" + pluginName + "/bans"},
 		{http.MethodGet, "/v0/resource/plugins/" + pluginName + "/unban"},
 		{http.MethodGet, "/v0/resource/plugins/" + pluginName + "/unban-all"},
@@ -856,16 +943,16 @@ routing:
 	if len(p.arkAuths) != 3 {
 		t.Fatalf("arkAuths=%d, want 3 (%v)", len(p.arkAuths), p.arkAuths)
 	}
-	labels := map[string]bool{}
+	comments := map[string]bool{}
 	for authID := range p.arkAuths {
-		labels[p.keyLabels[authID]] = true
+		comments[p.keyComments[authID]] = true
 		if !strings.HasPrefix(authID, "openai-compatibility:ark-code:") && !strings.HasPrefix(authID, "openai-compatibility:ark-plan:") {
 			t.Fatalf("unexpected authID %q", authID)
 		}
 	}
 	for _, want := range []string{"code-one", "plan-one", "plan-two"} {
-		if !labels[want] {
-			t.Fatalf("missing label %q in %v", want, labels)
+		if !comments[want] {
+			t.Fatalf("missing comment %q in %v", want, comments)
 		}
 	}
 	if p.strategy != strategyWeightedRoundRobin {

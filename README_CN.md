@@ -13,19 +13,19 @@
 - **精确封禁时长**：从 ARK 429 响应体解析准确的重置时间（`It will reset at ...`）；无法解析时按错误类型回退到内置时长。
 - **按错误类型回退**：`ServerOverloaded` → 5 分钟，`RateLimitExceeded`/`Throttled`/`RequestLimitExceeded` → 10 分钟，未知错误 → 可配置的 `fallback_ban_minutes`（默认 30 分钟）。
 - **封禁只延长不缩短**：新 429 的重置时间更晚则延长封禁，更早则忽略；保留原始封禁时间 `BannedAt`。
-- **Key 标签自动计算**：读取 `config.yaml` 行尾注释（如 `# iaas-app-center-test`）作为状态页的易读标签，无需靠 hash 辨认 key。
+- **Key 元数据自动计算**：读取 `config.yaml` 行尾注释（如 `# iaas-app-center-test`）作为状态页的易读注释，同时维护 provider 序号和掩码，无需靠 hash 辨认 key。
 - **懒解封**：无定时器。每次调度时检查封禁是否过期，过期自动放回候选池。
 - **遵循 CPA 调度策略**：当封禁迫使插件接管调度时，在过滤后的候选集上运行与 CPA `routing.strategy` 一致的算法——`round-robin`、`weighted-round-robin`（平滑 WRR，支持 per-key `weight`）或 `fill-first`。
 - **保持会话粘性**：开启 CPA 的 `routing.session-affinity` 时，插件在接管调度期间维持 session 到 key 的绑定（包括 CPA 的派生 session ID，不带 session 头的客户端也能粘住），TTL 遵循 `session-affinity-ttl`；绑定的 key 被 ban 时按配置策略重选换绑。
 - **封禁持久化**：封禁记录写入 `ark-429-autoban-bans.json`（插件目录旁），重启后自动恢复，不再因 CPA 重启丢失。
 - **无侵入**：只处理 Base URL 属于 `https://ark.cn-beijing.volces.com` 的 `openai-compatibility` 凭证。识别纯看 Base URL——provider 名字任意（`ark-code`、`ark-plan`……），非 ARK 凭证（如 OpenRouter）一律不碰。
-- **管理界面**：内嵌状态页 `/v0/resource/plugins/ark-429-autoban/status`，含封禁列表、倒计时、Key 标签、手动解封和配置重载；暗色模式跟随 CPA 管理面板。
+- **管理界面**：内嵌状态页 `/v0/resource/plugins/ark-429-autoban/status`，含封禁列表、倒计时、Key 清单、手动解封和配置重载；暗色模式跟随 CPA 管理面板。
 
 ## 配置项
 
 | 配置项 | 类型 | 默认值 | 说明 |
 |--------|------|--------|------|
-| `config_path` | string | — | CPA 的 config.yaml 路径，用于扫描 ARK provider、Base URL、API Key 及行尾注释，识别 ARK 凭证并生成状态页标签。 |
+| `config_path` | string | — | CPA 的 config.yaml 路径，用于扫描 ARK provider、Base URL、API Key 及行尾注释，识别 ARK 凭证并生成状态页元数据。 |
 | `fallback_ban_minutes` | integer | 30 | 未知 429 错误且无法解析重置时间时的通用封禁时长（分钟）。已知错误使用内置策略：`ServerOverloaded` 5 分钟，`RateLimitExceeded`、`Throttled`、`RequestLimitExceeded` 10 分钟。 |
 
 ## 使用方法
@@ -71,7 +71,7 @@ plugins:
       fallback_ban_minutes: 30  # 可选，默认 30
 ```
 
-`config_path` 必须是 CLIProxyAPI 进程能够读取的配置文件路径。插件会扫描该文件 `openai-compatibility:` 块中的所有 provider，凡 Base URL 属于 `https://ark.cn-beijing.volces.com` 的都识别为 ARK 凭证（不看 provider 名字，`ark-code`、`ark-plan` 等任意命名均可），并读取 API Key 的行尾注释在状态页显示易读标签。
+`config_path` 必须是 CLIProxyAPI 进程能够读取的配置文件路径。插件会扫描该文件 `openai-compatibility:` 块中的所有 provider，凡 Base URL 属于 `https://ark.cn-beijing.volces.com` 的都识别为 ARK 凭证（不看 provider 名字，`ark-code`、`ark-plan` 等任意命名均可），并读取 API Key 的行尾注释在状态页显示易读注释。
 
 同时，插件会从该文件的 `routing:` 块读取调度配置，使封禁期间的插件接管调度与 CPA 行为保持一致：
 
@@ -107,10 +107,11 @@ openai-compatibility:
 
 状态页支持：
 
-- 查看当前被封禁的 Key（显示账号注释标签；hover API Key 列查看完整 auth ID，hover Key 列查看打码密钥）
+- 查看当前被封禁的 Key（显示 provider 序号、注释和打码密钥；hover API Key 列查看完整 auth ID）
 - 查看封禁原因、恢复时间和剩余时间（每 30 秒自动刷新）
 - 手动解封单个或全部 Key
-- 重新读取 `config_path`，刷新标签和调度配置
+- 重新读取 `config_path`，刷新 Key 元数据和调度配置
+- 在弹窗中查看所有已发现的 Key（provider 序号、打码密钥、注释）
 
 ## 工作流程
 

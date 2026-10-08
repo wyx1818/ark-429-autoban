@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -15,6 +16,11 @@ import (
 func managementRegistration() pluginapi.ManagementRegistrationResponse {
 	return pluginapi.ManagementRegistrationResponse{
 		Routes: []pluginapi.ManagementRoute{
+			{
+				Method:      http.MethodGet,
+				Path:        managementRoutePrefix + "/keys",
+				Description: "List ARK credentials discovered from the CPA config (masked key and comment only).",
+			},
 			{
 				Method:      http.MethodGet,
 				Path:        managementRoutePrefix + "/bans",
@@ -33,7 +39,7 @@ func managementRegistration() pluginapi.ManagementRegistrationResponse {
 			{
 				Method:      http.MethodPost,
 				Path:        managementRoutePrefix + "/reload-config",
-				Description: "Reload key labels from the CPA config file.",
+				Description: "Reload key metadata and comments from the CPA config file.",
 			},
 		},
 		// Resource routes: passive static assets only (no auth, GET-only).
@@ -59,8 +65,8 @@ func managementRegistration() pluginapi.ManagementRegistrationResponse {
 	}
 }
 
-// reloadKeyLabels re-reads the CPA config file and recomputes key labels.
-func (p *plugin) reloadKeyLabels() int {
+// reloadKeyMetadata re-reads the CPA config file and recomputes key metadata.
+func (p *plugin) reloadKeyMetadata() int {
 	p.mu.RLock()
 	cfgPath := p.configPath
 	p.mu.RUnlock()
@@ -68,12 +74,12 @@ func (p *plugin) reloadKeyLabels() int {
 		return 0
 	}
 	p.mu.Lock()
-	p.keyLabels = make(map[string]string)
+	p.keyComments = make(map[string]string)
 	p.apiKeys = make(map[string]string)
 	p.maskedKeys = make(map[string]string)
 	p.arkAuths = make(map[string]bool)
 	p.mu.Unlock()
-	count := p.autoComputeKeyLabels(cfgPath)
+	count := p.autoComputeKeyMetadata(cfgPath)
 	p.mu.Lock()
 	p.scannedKeys = count
 	p.mu.Unlock()
@@ -95,6 +101,8 @@ func (p *plugin) dispatchManagement(req pluginapi.ManagementRequest) pluginapi.M
 	}
 
 	switch {
+	case method == http.MethodGet && matchesManagementPath(req.Path, "/keys"):
+		return jsonManagementResponse(http.StatusOK, p.currentKeyStatus())
 	case method == http.MethodGet && matchesManagementPath(req.Path, "/bans"):
 		return jsonManagementResponse(http.StatusOK, p.currentBanStatus())
 	case method == http.MethodPost && matchesManagementPath(req.Path, "/unban"):
@@ -102,7 +110,7 @@ func (p *plugin) dispatchManagement(req pluginapi.ManagementRequest) pluginapi.M
 	case method == http.MethodPost && matchesManagementPath(req.Path, "/unban-all"):
 		return p.handleManagementUnbanAll()
 	case method == http.MethodPost && matchesManagementPath(req.Path, "/reload-config"):
-		count := p.reloadKeyLabels()
+		count := p.reloadKeyMetadata()
 		return jsonManagementResponse(http.StatusOK, map[string]any{
 			"ok":           true,
 			"reloaded":     count,
@@ -123,6 +131,67 @@ func (p *plugin) dispatchManagement(req pluginapi.ManagementRequest) pluginapi.M
 	}
 }
 
+type managementKeyStatus struct {
+	Plugin  string              `json:"plugin"`
+	Version string              `json:"version"`
+	Count   int                 `json:"count"`
+	Keys    []managementKeyInfo `json:"keys"`
+}
+
+type managementKeyInfo struct {
+	APIKey    string `json:"api_key"`
+	MaskedKey string `json:"masked_key"`
+	Comment   string `json:"comment,omitempty"`
+}
+
+func (p *plugin) currentKeyStatus() managementKeyStatus {
+	p.mu.RLock()
+	keys := make([]managementKeyInfo, 0, len(p.maskedKeys))
+	for authID, maskedKey := range p.maskedKeys {
+		apiKey := p.apiKeys[authID]
+		if apiKey == "" {
+			apiKey = strings.TrimPrefix(authID, openaiCompatPrefix)
+		}
+		keys = append(keys, managementKeyInfo{
+			APIKey:    apiKey,
+			MaskedKey: maskedKey,
+			Comment:   p.keyComments[authID],
+		})
+	}
+	p.mu.RUnlock()
+
+	sort.Slice(keys, func(i, j int) bool {
+		if cmp := compareAPIKeys(keys[i].APIKey, keys[j].APIKey); cmp != 0 {
+			return cmp < 0
+		}
+		return keys[i].MaskedKey < keys[j].MaskedKey
+	})
+	return managementKeyStatus{
+		Plugin:  pluginName,
+		Version: pluginVersion,
+		Count:   len(keys),
+		Keys:    keys,
+	}
+}
+
+// compareAPIKeys sorts labels like "ark-code #2" numerically within a
+// provider while still falling back to lexical order for other identifiers.
+func compareAPIKeys(a, b string) int {
+	aSep := strings.LastIndex(a, " #")
+	bSep := strings.LastIndex(b, " #")
+	if aSep >= 0 && bSep >= 0 && a[:aSep] == b[:bSep] {
+		aNum, aErr := strconv.Atoi(a[aSep+2:])
+		bNum, bErr := strconv.Atoi(b[bSep+2:])
+		if aErr == nil && bErr == nil && aNum != bNum {
+			if aNum < bNum {
+				return -1
+			}
+			return 1
+		}
+	}
+	return strings.Compare(a, b)
+}
+
 type managementBanStatus struct {
 	Plugin      string              `json:"plugin"`
 	Version     string              `json:"version"`
@@ -134,7 +203,7 @@ type managementBanStatus struct {
 type managementBanInfo struct {
 	AuthID           string `json:"auth_id"`
 	APIKey           string `json:"api_key"`
-	KeyHint          string `json:"key_hint,omitempty"`
+	Comment          string `json:"comment,omitempty"`
 	MaskedKey        string `json:"masked_key,omitempty"`
 	ErrorCode        string `json:"error_code,omitempty"`
 	Window           string `json:"window"`
@@ -157,22 +226,18 @@ func (p *plugin) currentBanStatus() managementBanStatus {
 		if now.Before(entry.ResetAt) {
 			remaining = int64(entry.ResetAt.Sub(now).Seconds())
 		}
-		apiKeyLabel := strings.TrimPrefix(authID, "openai-compatibility:")
 		p.mu.RLock()
 		apiKey := p.apiKeys[authID]
-		keyHintLabel := p.keyLabels[authID]
-		if keyHintLabel == "" {
-			keyHintLabel = apiKey
-		}
+		comment := p.keyComments[authID]
 		maskedKey := p.maskedKeys[authID]
 		p.mu.RUnlock()
-		if apiKey != "" {
-			apiKeyLabel = apiKey
+		if apiKey == "" {
+			apiKey = strings.TrimPrefix(authID, openaiCompatPrefix)
 		}
 		info := managementBanInfo{
 			AuthID:           authID,
-			APIKey:           apiKeyLabel,
-			KeyHint:          keyHintLabel,
+			APIKey:           apiKey,
+			Comment:          comment,
 			MaskedKey:        maskedKey,
 			ErrorCode:        entry.ErrorCode,
 			Window:           entry.Window,

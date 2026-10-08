@@ -26,17 +26,6 @@ func (p *plugin) handleSchedulerPick(raw []byte) ([]byte, error) {
 			available = append(available, candidate)
 			continue
 		}
-		// Cache key abbreviation for display in ban logs and management API.
-		// Do this BEFORE checking ban status, so banned keys still get backfilled.
-		// CPA doesn't expose api_key in scheduler candidates, so build a hint
-		// from compat_name + config_index instead.
-		hint := p.buildHintFromAttrs(candidate.ID, candidate.Attributes)
-		if hint != "" {
-			p.mu.Lock()
-			p.keyHints[candidate.ID] = hint
-			p.mu.Unlock()
-			p.bans.backfillKeyHint(candidate.ID, hint)
-		}
 		// clearIfExpired auto-re-enables credentials whose reset time passed.
 		if p.bans.clearIfExpired(candidate.ID, now) {
 			// Still banned: drop from the candidate list.

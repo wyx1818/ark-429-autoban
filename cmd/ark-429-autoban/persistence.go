@@ -17,7 +17,6 @@ type persistEntry struct {
 	ResetAt   time.Time `json:"reset_at"`
 	Window    string    `json:"window"`
 	BannedAt  time.Time `json:"banned_at"`
-	KeyHint   string    `json:"key_hint"`
 	ErrorCode string    `json:"error_code,omitempty"`
 }
 
@@ -68,7 +67,6 @@ func (p *plugin) saveBans(dir string) {
 			ResetAt:   e.ResetAt,
 			Window:    e.Window,
 			BannedAt:  e.BannedAt,
-			KeyHint:   e.KeyHint,
 			ErrorCode: e.ErrorCode,
 		}
 	}
@@ -113,7 +111,6 @@ func (p *plugin) loadBans(dir string) {
 			ResetAt:   e.ResetAt,
 			Window:    e.Window,
 			BannedAt:  e.BannedAt,
-			KeyHint:   e.KeyHint,
 			ErrorCode: e.ErrorCode,
 		})
 		restored++

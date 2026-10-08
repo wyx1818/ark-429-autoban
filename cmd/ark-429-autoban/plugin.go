@@ -38,7 +38,7 @@ func pluginRegistration() registration {
 				{
 					Name:        "config_path",
 					Type:        pluginapi.ConfigFieldTypeString,
-					Description: "Path to CPA config.yaml for auto-computing key labels from api-key comments.",
+					Description: "Path to CPA config.yaml for auto-computing key metadata and comments.",
 				},
 				{
 					Name:        "fallback_ban_minutes",
@@ -94,42 +94,21 @@ func abbreviateKey(key string) string {
 	return key[:6] + "..." + key[len(key)-4:]
 }
 
-// buildHintFromAttrs creates a human-readable hint from scheduler candidate
-// attributes. First checks if a label is configured for the full auth ID,
-// then falls back to provider name.
-func (p *plugin) buildHintFromAttrs(authID string, attrs map[string]string) string {
-	// Check if a label is configured for the full auth ID.
+// apiKeyFor returns the human-readable provider/index label for an auth ID.
+func (p *plugin) apiKeyFor(authID string) string {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	if s := p.keyLabels[authID]; s != "" {
-		return s
+	if key := p.apiKeys[authID]; key != "" {
+		return key
 	}
-	// Fallback: apiKeys has "provider #N" label.
-	if s := p.apiKeys[authID]; s != "" {
-		return s
-	}
-	// Fallback: compat_name + provider_key.
-	compatName := strings.TrimSpace(attrs["compat_name"])
-	providerKey := strings.TrimSpace(attrs["provider_key"])
-	if compatName != "" {
-		return compatName
-	}
-	if providerKey != "" {
-		return providerKey
-	}
-	// Last resort: last segment of auth ID
-	parts := strings.Split(authID, ":")
-	if len(parts) > 0 {
-		return parts[len(parts)-1]
-	}
-	return ""
+	return strings.TrimPrefix(authID, openaiCompatPrefix)
 }
 
-// keyHintFor returns the cached abbreviated key for an auth ID, or "".
-func (p *plugin) keyHintFor(authID string) string {
+// keyCommentFor returns the configured comment for an auth ID, or "".
+func (p *plugin) keyCommentFor(authID string) string {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	return p.keyHints[authID]
+	return p.keyComments[authID]
 }
 
 // extractQuotaPeriod extracts a human-readable quota period from an ARK error
