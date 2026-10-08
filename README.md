@@ -137,6 +137,13 @@ After restarting CLIProxyAPI, check in order:
 
 Seeing the plugin load is not enough to prove the full chain works—verify the usage hook and scheduler with real requests.
 
+## Release automation
+
+The repository includes a GitHub Actions workflow for releases.
+
+- **Manual release**: Go to **Actions → Release → Run workflow**, enter a version without the leading `v` (for example `0.2.3`). The workflow creates the tag, runs tests, builds the `.so`, packages the zip and checksums, and publishes the GitHub Release.
+- **Tag-only release**: Push a tag matching `v*` (for example `v0.2.3`). The workflow skips tag creation and runs the same build and release steps.
+
 ## Install from the Plugin Store
 
 If your CPA version supports the plugin store, search for `ark-429-autoban` in the CPA management panel.

@@ -1,0 +1,105 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release, without the leading v (for example, 0.2.3)'
+        required: true
+        type: string
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Tag, build, and publish
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.x'
+
+      - name: Resolve version
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            version="${INPUT_VERSION}"
+          else
+            version="${GITHUB_REF_NAME#v}"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Validate version
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Invalid version '$VERSION'. Use a semantic version such as 0.2.3 or 0.3.0-beta.1 (without the leading v)." >&2
+            exit 1
+          fi
+
+      - name: Ensure tag does not already exist
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if git rev-parse -q --verify "refs/tags/v${VERSION}" >/dev/null; then
+            echo "::error::Tag v${VERSION} already exists." >&2
+            exit 1
+          fi
+
+      - name: Create and push tag
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "v${VERSION}" -m "Release v${VERSION}"
+          git push origin "v${VERSION}"
+
+      - name: Run tests
+        run: go test ./...
+
+      - name: Build plugin
+        run: |
+          mkdir -p dist/release
+          CGO_ENABLED=1 go build -buildmode=c-shared -ldflags="-s -w" -o dist/ark-429-autoban.so ./cmd/ark-429-autoban
+          rm -f dist/ark-429-autoban.h
+
+      - name: Package release assets
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          cp dist/ark-429-autoban.so "dist/release/ark-429-autoban-v${VERSION}.so"
+          zip -q -9 "dist/release/ark-429-autoban_${VERSION}_linux_amd64.zip" "dist/release/ark-429-autoban-v${VERSION}.so"
+          cd dist/release
+          sha256sum \
+            "ark-429-autoban-v${VERSION}.so" \
+            "ark-429-autoban_${VERSION}_linux_amd64.zip" > checksums.txt
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          gh release create "v${VERSION}" \
+            "dist/release/ark-429-autoban-v${VERSION}.so" \
+            "dist/release/ark-429-autoban_${VERSION}_linux_amd64.zip" \
+            "dist/release/checksums.txt" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "v${VERSION}" \
+            --generate-notes \
+            --latest

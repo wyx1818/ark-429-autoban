@@ -137,6 +137,13 @@ graph TD
 
 仅看到插件加载成功并不能证明完整链路正常，最好使用真实请求验证 usage hook 和 scheduler。
 
+## 发布自动化
+
+仓库内置了 GitHub Actions 发布工作流。
+
+- **手动发布**：进入 **Actions → Release → Run workflow**，输入不带前导 `v` 的版本号（例如 `0.2.3`）。工作流会创建 tag、运行测试、构建 `.so`、生成 zip 和校验文件，并发布 GitHub Release。
+- **仅推 tag 发布**：直接推送 `v*` 格式的 tag（例如 `v0.2.3`）。工作流会跳过创建 tag，直接执行同样的构建和发布步骤。
+
 ## Plugin Store 安装
 
 如果 CPA 版本支持插件商店，可以直接在 CPA 管理面板的 Plugin Store 中搜索 `ark-429-autoban` 安装。
